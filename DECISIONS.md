@@ -46,3 +46,31 @@ The package lives under `src/gateway/` (not top-level `gateway/`) so tests run a
 ### D8 — Harness-first: skeleton with typed stubs, no behavior
 This slice builds only the wiring — composition root, config, routes, ports, and typed stubs whose bodies `raise NotImplementedError` — plus the toolchain, tests, CI, and the in-session quality hook. The single live path is `GET /health`. Rationale: prove the architecture and the `mypy --strict` + ruff + pytest gates end-to-end *before* any logic exists, so every subsequent slice (semantic cache → pipeline → intent caching) lands on a green, type-checked floor.
 **Cost to reverse:** n/a — this is the starting point; later slices fill the stubs in place behind the existing seams.
+
+---
+
+## Slice 1 — Semantic cache vertical
+
+### D9 — `cache_entries` schema; the app supplies `id` + `created_at`
+One row per cached prompt/response: `id uuid PK`, `prompt text`, `response text`, `model_used text`, `embedding vector(384)`, `created_at timestamptz`. The column defaults (`gen_random_uuid()`, `now()`) exist for ad-hoc SQL, but the application sets `id` and `created_at` explicitly in `cache_service.store` — because `CacheEntry` (the domain model crossing the `CacheRepository` port) requires both as non-optional, and generating them app-side avoids an `INSERT … RETURNING` round-trip just to learn values we already hold. `vector(384)` matches the embedding model (D11); a dimension mismatch fails on insert.
+**Cost to reverse:** the store is a disposable cache — `docker compose down -v` and recreate. Adding/changing a column is localized to `db/init.sql` + the two SQL statements in `adapters/repository.py`.
+
+### D10 — Semantic similarity threshold default `0.95`
+`similarity = 1 - (embedding <=> query)` (cosine); a hit must clear `GATEWAY_SEMANTIC_THRESHOLD`, default `0.95`. The gate lives at the call site (the service passes `threshold` into `CacheRepository.lookup`, per `ports.py`), not baked into SQL — so tuning it never touches the repository. `0.95` is deliberately tight for a *text-answer* cache: a near-paraphrase clears it, but a merely-related prompt does not, keeping false-positive cache hits rare. The intent tier (Slice 3) will gate harder still (`0.97`), because a false positive there fires a *wrong tool call*.
+**Cost to reverse:** trivial — one env var; no code or schema change.
+
+### D11 — Embedding model `BAAI/bge-small-en-v1.5` (kept over all-MiniLM-L6-v2)
+Slice 1 was specced against `all-MiniLM-L6-v2`, but both it and the existing config default (`bge-small-en-v1.5`) are 384-dim, fastembed/ONNX, CPU-only, and interchangeable at the `vector(384)` schema — so there was no schema reason to switch. Kept the standing config default to avoid churn; bge-small also tends to edge MiniLM on retrieval benchmarks, which suits a semantic cache. The model is config-driven (`GATEWAY_EMBEDDING_MODEL`), loaded **once** in the lifespan (never per request), and called off the event loop via `anyio.to_thread.run_sync` (fastembed is synchronous).
+**Cost to reverse:** swap one env var — *provided* the replacement is also 384-dim. A different dimension means changing `vector(N)` and re-embedding the cache (which, being disposable, just means dropping it).
+
+### D12 — `CacheService.lookup` returns `CacheHit | CacheMiss`, not `CacheHit | None`
+The miss case carries the embedding the service just computed (`CacheMiss(embedding=...)`), so a follow-up `store` can reuse it instead of embedding the same prompt twice — the lookup-then-store flow the pipeline will run in Slice 2. A bare `None` can't carry that. The **ports are unchanged**: `CacheRepository.lookup` still returns `CacheHit | None` (the repository only reports the nearest neighbour clearing the gate); this richer shape is purely service-level, where we're free to evolve from the stub. `CacheMiss` is a frozen dataclass (not Pydantic) so the 384-float vector isn't re-validated on every miss, and it never crosses the API boundary — the route maps it to `{"hit": false}`.
+**Cost to reverse:** localized to `cache_service.py` + its callers (the two routes); the ports and adapters are untouched.
+
+### D13 — `docker-compose.yml` volume mounts `/var/lib/postgresql` (not `…/data`) for PG18
+PG18 images store data in a major-version subdirectory and expect the volume at `/var/lib/postgresql`; the pre-18 `…/data` mount makes the container exit on start (docker-library/postgres#1259). Corrected during Slice 1 — see `FAILURES.md` F2. The HNSW index choice itself is unchanged (D3).
+**Cost to reverse:** trivial — one line in compose; recreate the disposable volume.
+
+### D14 — Similarity ranking stays in SQL, not the service
+The nearest-neighbour search **and** its threshold gate live in the `lookup` query (`ORDER BY embedding <=> %s … WHERE 1 - (embedding <=> %s) >= %s`), not in the service. This is not business logic leaking into SQL — it *is* the search operation, and it's the only place that can use the HNSW index. Pulling ranking app-side would force loading every row and a full-table scan in Python, discarding the index that is the whole point of pgvector. The real layer boundary isn't "ranking vs. orchestration", it's the `CacheRepository` port: all raw SQL is confined to `adapters/repository.py`, so the service depends on the port, not the query, and the entire vector store is swappable (pgvector → a dedicated vector DB) without the service knowing. The service still owns the *policy* — it passes the `threshold` and decides what a hit/miss means downstream (D12); the repository owns the *mechanism*.
+**Cost to reverse:** n/a — this is the architecture, not a tunable. Changing the store is an adapter swap behind the port (see D2's scaling note).

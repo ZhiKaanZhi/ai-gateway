@@ -17,7 +17,7 @@ This is the small set of things that are easy to get wrong and silently break ve
 
 3. **Open the async pool in the FastAPI `lifespan`, not in the constructor.** Constructor-opening is deprecated; pass `open=False` and call `await pool.open()` / `await pool.close()`. Never open/close a pool per request.
 
-4. **Pass vectors as parameters — never string-format them into SQL.** With the type registered, a `list[float]` or numpy array binds to `vector` directly. String interpolation is both wrong and an injection footgun.
+4. **Pass vectors as parameters — never string-format them into SQL.** Wrap the value in `pgvector.Vector(...)` (or use a numpy array) so it binds to `vector`; a *bare* `list[float]` does **not** bind correctly (see "Gotchas grows"). String interpolation is both wrong and an injection footgun.
 
 5. **Distance operators** (this project uses **cosine**):
    - `<=>` cosine distance · `<->` L2 · `<#>` negative inner product.
@@ -33,7 +33,10 @@ This is the small set of things that are easy to get wrong and silently break ve
    - The index opclass must match the query operator (`vector_cosine_ops` ↔ `<=>`).
    - **Docker build gotcha:** parallel HNSW index builds use shared memory; if a build errors on a larger dataset, raise the container's `shm_size` to at least `maintenance_work_mem`.
 
-9. **Windows:** psycopg async is incompatible with the default ProactorEventLoop. Under uvicorn it's fine; if running asyncio directly, set `WindowsSelectorEventLoopPolicy`.
+9. **Windows:** psycopg async is incompatible with the ProactorEventLoop, so every pool connection fails with "Psycopg cannot use the 'ProactorEventLoop'". This bites **both** under uvicorn and under pytest-asyncio. The two need different fixes:
+   - **uvicorn:** setting `WindowsSelectorEventLoopPolicy` does **not** work — uvicorn (≥0.36) passes a `loop_factory` to `asyncio.run` that hard-codes `ProactorEventLoop` on Windows (`uvicorn.loops.asyncio`), ignoring the policy. Run the server on a selector loop yourself: build `uvicorn.Server(config)` and `asyncio.run(server.serve(), loop_factory=asyncio.SelectorEventLoop)`. This project does that in `gateway/__main__.py` (`python -m gateway`), guarded to `win32`.
+   - **pytest-asyncio:** it honours the asyncio policy, so an `event_loop_policy` fixture returning `WindowsSelectorEventLoopPolicy()` is enough.
+   (Earlier wording here said "under uvicorn it's fine" and "set the policy" — both wrong; see `FAILURES.md` F3.)
 
 ## Reference pattern (pool + lifespan + nearest-neighbour)
 
@@ -77,4 +80,4 @@ Wrap this behind the `CacheRepository` Protocol in `adapters/repository.py`; do 
 
 ## Gotchas grows
 
-- _(append real failures here as the build surfaces them — feeds `FAILURES.md`)_
+- **A plain `list[float]` does NOT bind to `vector` — wrap it in `pgvector.Vector` (or use a numpy array).** Rule 4 above overstated this. In pgvector ≥0.3 the psycopg dumper is registered only for `numpy.ndarray` and `pgvector.Vector`; a bare `list` falls through to psycopg's array dumper and Postgres rejects it: `operator does not exist: vector <=> double precision[]`. `register_vector_async` fixes the *load* (read) side and the type OID, but not list *dumping*. Fix: at the bind boundary in the repository, pass `Vector(embedding)` for both the query vector and the stored vector. Keep the domain type `list[float]`; convert only where it meets SQL. (Slice 1, 2026-06-19.)

@@ -6,6 +6,7 @@ These are plain data: Pydantic models and enums, no behavior. Keeping them free 
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
@@ -56,3 +57,15 @@ class CacheHit(BaseModel):
     response: str
     model_used: str
     similarity: float = Field(ge=0.0, le=1.0)
+
+
+@dataclass(frozen=True, slots=True)
+class CacheMiss:
+    """A cache lookup that found nothing close enough — carries the embedding it already computed.
+
+    Internal to the service layer (never crosses the API boundary): handing the vector back lets a
+    follow-up ``store`` persist without re-embedding the same prompt. A plain frozen dataclass, not
+    a Pydantic model, so the 384-float vector isn't re-validated on every miss.
+    """
+
+    embedding: Embedding

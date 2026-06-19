@@ -232,6 +232,7 @@ name = "gateway"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "fastembed" },
     { name = "httpx" },
@@ -252,6 +253,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "fastembed" },
     { name = "httpx" },

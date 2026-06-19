@@ -8,6 +8,7 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "httpx",
+    "anyio",
     "pydantic",
     "pydantic-settings",
     "psycopg[binary,pool]",
@@ -57,3 +58,6 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: touches a real Postgres+pgvector DB; skipped when none is reachable",
+]

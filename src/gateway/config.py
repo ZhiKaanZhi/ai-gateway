@@ -22,6 +22,10 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # --- HTTP server (used by `python -m gateway`) ---
+    host: str = "127.0.0.1"
+    port: int = 8000
+
     # --- PostgreSQL (defaults mirror docker-compose.yml) ---
     db_host: str = "localhost"
     db_port: int = 5432

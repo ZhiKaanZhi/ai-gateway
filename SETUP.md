@@ -37,8 +37,10 @@ uv sync            # uv reads .python-version, fetches that Python, installs dep
 
 # 3. Run tests / the app
 uv run pytest
-uv run uvicorn gateway.main:app --reload
+uv run python -m gateway          # the run entrypoint (see Windows note below)
 ```
+
+> Run the app with `python -m gateway`, not `uvicorn gateway.main:app`, on **Windows**: the launcher forces a selector event loop, which psycopg async requires there (see Notes). On macOS/Linux `uvicorn gateway.main:app --reload` also works.
 
 That's the entire end-user path. `uv sync` is reproducible across machines because of `uv.lock`.
 
@@ -92,5 +94,5 @@ uv run pytest -q
 ## Notes
 
 - **Postgres version:** pinned to `pg18` in `docker-compose.yml` — the latest major, so the longest support runway (Postgres has no LTS track; every major gets 5 years from its release, so newest = longest-supported). Minor bumps (`18.x`) are seamless; a *major* bump changes the on-disk format and needs `pg_upgrade` or dump/restore — but since this store is a disposable cache, `docker compose down -v` and recreate is fine.
-- **Windows + async psycopg:** under `uvicorn` this is handled. If you ever run asyncio directly on Windows, set `asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())` — psycopg's async is incompatible with the default ProactorEventLoop. (See the `pgvector-psycopg` skill.)
+- **Windows + async psycopg:** psycopg's async is incompatible with the default ProactorEventLoop, and uvicorn hard-codes Proactor on Windows — so launch with `python -m gateway`, which runs the server on a SelectorEventLoop instead. (Tests handle this via an `event_loop_policy` fixture.) See the `pgvector-psycopg` skill, rule 9, and `FAILURES.md` F3.
 - **Enabling the extension:** done once via `db/init.sql`, which Postgres runs on first container start. If you reset the volume, it re-runs.

@@ -9,7 +9,9 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # PG18 images store data in a major-version subdir; mount the parent, not /data,
+      # or the container refuses to start (docker-library/postgres#1259).
+      - pgdata:/var/lib/postgresql
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]

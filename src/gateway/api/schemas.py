@@ -31,3 +31,32 @@ class ChatResponse(BaseModel):
     model: str
     cached: bool
     similarity: float | None = None
+
+
+class CacheLookupRequest(BaseModel):
+    """Ask the cache whether a semantically similar prompt has been answered before."""
+
+    prompt: str
+
+
+class CacheLookupResponse(BaseModel):
+    """Result of a cache lookup. On a miss every detail field is ``None``."""
+
+    hit: bool
+    response: str | None = None
+    model_used: str | None = None
+    similarity: float | None = None
+
+
+class CacheStoreRequest(BaseModel):
+    """Persist a prompt/response pair (with the model that produced it) for future lookups."""
+
+    prompt: str
+    response: str
+    model_used: str
+
+
+class CacheStoreResponse(BaseModel):
+    """Acknowledgement that an entry was stored."""
+
+    stored: bool = True

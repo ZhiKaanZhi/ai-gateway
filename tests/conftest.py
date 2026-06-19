@@ -7,6 +7,8 @@ implementation for each port, no DB or model required. They satisfy the Protocol
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -26,27 +28,48 @@ from gateway.domain.models import (
 from gateway.main import create_app
 
 
+@pytest.fixture(scope="session")
+def event_loop_policy() -> asyncio.AbstractEventLoopPolicy:
+    """On Windows, psycopg async needs the selector loop, not the default Proactor (skill gotcha 9).
+
+    pytest-asyncio drives asyncio directly (no uvicorn), so the integration test would otherwise
+    fail on the user's Windows box. Honoured by pytest-asyncio for the loops it creates.
+    """
+    if sys.platform == "win32":
+        return asyncio.WindowsSelectorEventLoopPolicy()
+    return asyncio.get_event_loop_policy()
+
+
 class FakeEmbeddingProvider:
-    """Deterministic, dependency-free ``EmbeddingProvider`` for tests."""
+    """Deterministic, dependency-free ``EmbeddingProvider`` for tests; counts its calls."""
 
     def __init__(self, dim: int = 384) -> None:
         self._dim = dim
+        self.calls = 0
 
     async def embed(self, text: str) -> Embedding:
+        self.calls += 1
         return [0.0] * self._dim
 
 
 class FakeCacheRepository:
-    """In-memory ``CacheRepository``: stores entries and returns the last one as a hit."""
+    """In-memory ``CacheRepository``: stores entries, returns the last one if it clears the gate.
 
-    def __init__(self) -> None:
+    The fake reports a fixed ``similarity`` for the most recent entry and honours ``threshold`` so
+    service-level tests can drive both the hit and the miss path.
+    """
+
+    def __init__(self, similarity: float = 1.0) -> None:
         self.entries: list[CacheEntry] = []
+        self._similarity = similarity
 
     async def lookup(self, embedding: Embedding, threshold: float) -> CacheHit | None:
-        if not self.entries:
+        if not self.entries or self._similarity < threshold:
             return None
         entry = self.entries[-1]
-        return CacheHit(response=entry.response, model_used=entry.model_used, similarity=1.0)
+        return CacheHit(
+            response=entry.response, model_used=entry.model_used, similarity=self._similarity
+        )
 
     async def store(self, entry: CacheEntry) -> None:
         self.entries.append(entry)

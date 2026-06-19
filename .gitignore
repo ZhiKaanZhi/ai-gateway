@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual env (uv manages this — do NOT commit it)
+.venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets — commit .env.example, never .env
+.env
+
+# fastembed / local model cache (if cached into the project tree)
+.fastembed_cache/
+local_cache/
+
+# OS / editor
+.DS_Store
+.idea/
+
+# NOTE: uv.lock, .python-version, and .env.example are intentionally committed
+# (reproducibility) — do not add them here.

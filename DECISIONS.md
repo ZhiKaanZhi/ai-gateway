@@ -32,3 +32,17 @@ None of the version/index pins above is the scaling lever. Two things are:
 2. **The ports** — `EmbeddingProvider`, `CacheRepository` (→ vector store), and `ModelBackend` are the seams that let the heavy pieces be swapped (local→hosted embeddings, pgvector→dedicated vector DB, one→many providers) without touching service logic.
 
 So the pins are leaf-level and reversible; the future-flexibility lives in the architecture, which is already fixed. Don't churn the pins under pressure.
+
+---
+
+### D6 — `src/` layout + hatchling build backend
+The package lives under `src/gateway/` (not top-level `gateway/`) so tests run against the *installed* package, never accidentally against the source tree on `sys.path` — the standard guard against "passes locally, breaks on install." `hatchling` is the build backend: PEP 621-native, zero extra config beyond naming the wheel package, and widely understood (legibility goal). `uv` drives it; `pythonpath = ["src"]` in pytest keeps the dev loop fast without an editable-install step in every shell.
+**Cost to reverse:** trivial — swap the `[build-system]` table; no app code changes.
+
+### D7 — Five Protocols, only at the swap seams
+`domain/ports.py` defines exactly five `Protocol`s — `EmbeddingProvider`, `CacheRepository`, `ModelBackend`, `ModelRouter`, `ComplexityClassifier` — one per place a component is genuinely meant to be swapped. They are `runtime_checkable` so tests can assert fakes fit structurally. Concrete impls neither import nor inherit them (structural typing), which is the deliberate anti-pattern to the C# "interface-per-class" tell. `BillingService`/`QualityChecker` (NoOp) from CLAUDE.md are **deferred, not dropped** — they'll be added in the same commit as the service that first consumes them, so a port never lands without a caller.
+**Cost to reverse:** adding/removing a seam is localized to `ports.py` + that adapter; the service layer depends on the Protocol, not the concrete type.
+
+### D8 — Harness-first: skeleton with typed stubs, no behavior
+This slice builds only the wiring — composition root, config, routes, ports, and typed stubs whose bodies `raise NotImplementedError` — plus the toolchain, tests, CI, and the in-session quality hook. The single live path is `GET /health`. Rationale: prove the architecture and the `mypy --strict` + ruff + pytest gates end-to-end *before* any logic exists, so every subsequent slice (semantic cache → pipeline → intent caching) lands on a green, type-checked floor.
+**Cost to reverse:** n/a — this is the starting point; later slices fill the stubs in place behind the existing seams.

@@ -10,7 +10,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS cache_entries (
     id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     prompt      text        NOT NULL,
-    prompt_hash text        UNIQUE,
+    prompt_hash text        NOT NULL UNIQUE,
     response    text        NOT NULL,
     model_used  text        NOT NULL,
     embedding   vector(384) NOT NULL,

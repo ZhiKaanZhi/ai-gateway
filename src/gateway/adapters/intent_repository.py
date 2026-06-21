@@ -76,16 +76,3 @@ class PgVectorIntentRepository:
                     entry.created_at,
                 ),
             )
-
-
-def create_intent_pool(conninfo: str) -> AsyncConnectionPool:
-    """Build the intent store's async pool, unopened.
-
-    Shares the same configure hook (register_vector_async) as the cache pool — imported from the
-    cache repository to keep the registration pattern in one place.
-    """
-    from gateway.adapters.repository import (
-        _configure,  # noqa: PLC0415 — avoids circular at module level
-    )
-
-    return AsyncConnectionPool(conninfo, open=False, configure=_configure)

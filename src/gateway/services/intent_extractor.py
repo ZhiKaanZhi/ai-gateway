@@ -31,6 +31,9 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), "{EMAIL}"),
     # URLs (http/https)
     (re.compile(r"https?://\S+"), "{URL}"),
+    # Quoted literals — the operand of a "translate 'X'", "define 'X'" style intent. The inner
+    # value is the parameter; an answer that reuses it (e.g. "'Hello' is 'Hola'") is bound to it.
+    (re.compile(r"['\"]([^'\"]+)['\"]"), "{STR}"),
     # Order/ticket/ID patterns: alphanumeric codes with optional prefixes (#123, ORD-456, ABC123)
     (re.compile(r"\b(?:#\d+|[A-Z]{2,}-\d+|[A-Z]+\d{3,}|\d{4,})\b"), "{ID}"),
     # Standalone numbers (integers and decimals, not already matched above)

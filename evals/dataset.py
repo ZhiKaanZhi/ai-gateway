@@ -23,7 +23,15 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class EvalCase:
-    """One adversarial eval case."""
+    """One adversarial eval case.
+
+    ``cosine`` is the similarity a real 384-dim embedder (bge-small) assigns the
+    ``cached_question`` / ``new_question`` pair on the *stripped* canonical form. It is part of the
+    hand-labeled adversarial design, not computed offline: the surface-close cases score ~0.97+
+    (single-token difference), the surface-distant cases score low. It drives both the gate's
+    candidate similarity and the cosine-only baseline, so the offline harness reproduces the real
+    contrast without needing the model loaded. (Re-run against a live embedder to confirm.)
+    """
 
     id: str
     cached_question: str
@@ -31,6 +39,7 @@ class EvalCase:
     cached_parameters: list[str]
     new_question: str
     expected: str  # "serve" | "refuse"
+    cosine: float
     note: str
 
 
@@ -43,6 +52,7 @@ EVAL_CASES: list[EvalCase] = [
         cached_parameters=["1111"],
         new_question="Where is order 2222?",
         expected="refuse",
+        cosine=0.98,  # one digit differs → near-identical in embedding space
         note="Answer is bound to order number 1111; serving it for 2222 is factually wrong.",
     ),
     EvalCase(
@@ -52,18 +62,21 @@ EVAL_CASES: list[EvalCase] = [
         cached_parameters=["ORD-500"],
         new_question="What is the status of order ORD-501?",
         expected="refuse",
+        cosine=0.97,
         note="Answer bound to ORD-500; ORD-501 may have a different status.",
     ),
     EvalCase(
         id="translation-1",
         cached_question="Translate 'hello' to Spanish.",
         cached_answer="'Hello' in Spanish is 'Hola'.",
-        cached_parameters=[],
+        cached_parameters=["hello"],
         new_question="Translate 'goodbye' to Spanish.",
         expected="refuse",
+        cosine=0.97,
         note=(
-            "Even though parameters=[] (no extraction), the answer is implicitly bound to 'hello'. "
-            "The gate's binding check (answer contains the thing asked about) catches this."
+            "The extractor strips the quoted literal as a parameter ('hello'), and the cached "
+            "answer reuses it ('Hello'/'Hola'). The binding check (D25) sees the answer contains "
+            "the stored parameter → bound → refuse, regardless of the Verifier score."
         ),
     ),
     EvalCase(
@@ -73,6 +86,7 @@ EVAL_CASES: list[EvalCase] = [
         cached_parameters=["ACC-9001"],
         new_question="What is the balance on account ACC-9002?",
         expected="refuse",
+        cosine=0.98,
         note="Balance is account-specific; cross-serving is wrong.",
     ),
     # --- SURFACE-DISTANT, ANSWER-SAME (should serve) ---
@@ -84,6 +98,7 @@ EVAL_CASES: list[EvalCase] = [
         cached_parameters=[],
         new_question="ugh how do I send something back that I bought",
         expected="serve",
+        cosine=0.82,  # same intent, very different words → clears a real embedder but misses 0.97
         note="Completely different wording, but the same generic return policy answers both.",
     ),
     EvalCase(
@@ -93,6 +108,7 @@ EVAL_CASES: list[EvalCase] = [
         cached_parameters=[],
         new_question="How many days do I have to get my money back?",
         expected="serve",
+        cosine=0.80,
         note="Different framing of the same paramless policy question.",
     ),
     EvalCase(
@@ -102,6 +118,7 @@ EVAL_CASES: list[EvalCase] = [
         cached_parameters=[],
         new_question="how do I flip a string around in python, code pls",
         expected="serve",
+        cosine=0.78,
         note="Idiomatic code answer is paramless and correct for both phrasings.",
     ),
     EvalCase(
@@ -112,6 +129,7 @@ EVAL_CASES: list[EvalCase] = [
         cached_parameters=[],
         new_question="Steps to link Salesforce to my workspace?",
         expected="serve",
+        cosine=0.83,
         note="Integration walkthrough is paramless and reusable across phrasings.",
     ),
 ]

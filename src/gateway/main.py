@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 
 from gateway.adapters.backends.openai_compat import OpenAICompatibleBackend
 from gateway.adapters.embeddings import FastembedEmbeddingProvider
-from gateway.adapters.intent_repository import PgVectorIntentRepository, create_intent_pool
+from gateway.adapters.intent_repository import PgVectorIntentRepository
 from gateway.adapters.repository import PgVectorCacheRepository, create_cache_pool
 from gateway.adapters.verifier import ModelVerifier
 from gateway.api.routes import router
@@ -44,17 +44,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # --- Embeddings (shared: used by both the semantic cache and the intent tier) ---
     embeddings = FastembedEmbeddingProvider(settings.embedding_model)
 
-    # --- Semantic cache ---
+    # --- Shared vector pool (one pool, both tables: cache_entries + intent_entries) ---
+    # The two stores live in the same database and share the vector-type registration, so a single
+    # pool serves both — the separation that matters is the repository seam, not the connection.
     pool = create_cache_pool(settings.conninfo)
     await pool.open()
+
+    # --- Semantic cache ---
     repository = PgVectorCacheRepository(pool)
     cache_service = CacheService(embeddings, repository, threshold=settings.semantic_threshold)
     app.state.cache_service = cache_service
 
-    # --- Intent store ---
-    intent_pool = create_intent_pool(settings.conninfo)
-    await intent_pool.open()
-    intent_repository = PgVectorIntentRepository(intent_pool)
+    # --- Intent store (same pool, different table) ---
+    intent_repository = PgVectorIntentRepository(pool)
 
     # --- Intent extractor (stateless, no I/O) ---
     extractor = RegexIntentExtractor()
@@ -107,7 +109,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await client.aclose()
         await verifier_client.aclose()
         await pool.close()
-        await intent_pool.close()
 
 
 async def _on_backend_error(request: Request, exc: Exception) -> JSONResponse:

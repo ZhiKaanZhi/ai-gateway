@@ -76,5 +76,7 @@ async def chat(request: ChatRequest, pipeline: PipelineDep) -> ChatResponse:
         response=served.text,
         model=served.model,
         cached=served.cached,
+        tier=served.tier,
         similarity=served.similarity,
+        confidence=served.confidence,
     )

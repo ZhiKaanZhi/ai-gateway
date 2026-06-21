@@ -4,6 +4,9 @@ There is deliberately **one Protocol per real seam**, not one per class (that wo
 tell CLAUDE.md warns about). Concrete implementations live in :mod:`gateway.adapters` (I/O) and
 :mod:`gateway.services` (orchestration); tests substitute in-memory fakes. Structural typing means
 an implementation never has to import or inherit these — it just has to fit.
+
+Slice 3 adds three new seams for the intent tier (D29): ``IntentExtractor``, ``IntentRepository``,
+and ``Verifier``. Five ports → eight.
 """
 
 from __future__ import annotations
@@ -17,6 +20,9 @@ from gateway.domain.models import (
     CompletionResult,
     Complexity,
     Embedding,
+    ExtractedIntent,
+    IntentCandidate,
+    IntentEntry,
 )
 
 
@@ -29,13 +35,15 @@ class EmbeddingProvider(Protocol):
 
 @runtime_checkable
 class CacheRepository(Protocol):
-    """Vector-backed cache store. Default adapter: psycopg 3 + pgvector.
+    """Vector-backed semantic cache store. Default adapter: psycopg 3 + pgvector.
 
     The similarity gate lives at the call site (the service passes ``threshold``); the repository
     only reports the nearest neighbour that clears it.
     """
 
     async def lookup(self, embedding: Embedding, threshold: float) -> CacheHit | None: ...
+
+    async def exact_lookup(self, prompt_hash: str) -> CacheHit | None: ...
 
     async def store(self, entry: CacheEntry) -> None: ...
 
@@ -62,3 +70,48 @@ class ComplexityClassifier(Protocol):
     """Assesses how hard a prompt is, so the router can serve it cost-aware."""
 
     async def classify(self, prompt: str) -> Complexity: ...
+
+
+# ---------------------------------------------------------------------------
+# Intent tier ports (D29) — three new seams
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class IntentExtractor(Protocol):
+    """Strips parameters from a prompt to produce the canonical intent form.
+
+    Returns :class:`ExtractedIntent` containing both the canonical (stripped) prompt and
+    the bare parameter values, which are persisted in ``intent_entries`` (D27) so the gate
+    can read them back for the binding check (D25).
+    """
+
+    def extract(self, prompt: str) -> ExtractedIntent: ...
+
+
+@runtime_checkable
+class IntentRepository(Protocol):
+    """Vector store for the intent tier. Default adapter: psycopg 3 + pgvector (D27).
+
+    Searches the *stripped-prompt* embedding space, not the full-prompt space — that is the
+    mechanical difference from ``CacheRepository`` that makes #1111 and #2222 collapse to the
+    same candidate.
+    """
+
+    async def search(
+        self, embedding: Embedding, threshold: float, limit: int = 5
+    ) -> list[IntentCandidate]: ...
+
+    async def store(self, entry: IntentEntry) -> None: ...
+
+
+@runtime_checkable
+class Verifier(Protocol):
+    """Judges whether a cached answer is correct for a new question.
+
+    Returns a score in ``[0, 1]``; the **gate** owns the pass cutoff (D26) so the verify band
+    is calibrated from the eval set (D30) and not hidden inside the adapter. A rules engine
+    could implement this seam instead of a model.
+    """
+
+    async def verify(self, question: str, candidate_answer: str) -> float: ...

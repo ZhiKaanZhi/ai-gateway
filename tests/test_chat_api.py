@@ -15,12 +15,20 @@ from httpx import ASGITransport, AsyncClient
 
 from gateway.api.routes import get_pipeline
 from gateway.domain.errors import BackendError
-from gateway.domain.models import CompletionRequest, Complexity, ServedCompletion
+from gateway.domain.models import CacheTier, CompletionRequest, Complexity, ServedCompletion
 from gateway.services.cache_service import CacheService
 from gateway.services.classifier import HeuristicClassifier
+from gateway.services.intent_gate import IntentGate
 from gateway.services.pipeline import RequestPipeline
 from gateway.services.router import CostAwareRouter
-from tests.conftest import FakeCacheRepository, FakeEmbeddingProvider, FakeModelBackend
+from tests.conftest import (
+    FakeCacheRepository,
+    FakeEmbeddingProvider,
+    FakeIntentExtractor,
+    FakeIntentRepository,
+    FakeModelBackend,
+    FakeVerifier,
+)
 
 
 def _real_pipeline(
@@ -31,7 +39,24 @@ def _real_pipeline(
     cache = CacheService(embeddings, repository, threshold=0.95)
     classifier = HeuristicClassifier()
     router = CostAwareRouter({c: backend for c in Complexity})
-    return RequestPipeline(cache, classifier, router)
+    gate = IntentGate(
+        FakeVerifier(score=0.0),
+        margin_min=0.05,
+        staleness_max_seconds=86400.0,
+        verify_band_lo=0.70,
+        verify_band_hi=0.85,
+        verify_pass_threshold=0.80,
+    )
+    return RequestPipeline(
+        cache,
+        classifier,
+        router,
+        embeddings,
+        FakeIntentExtractor(),
+        FakeIntentRepository(),
+        gate,
+        intent_match_threshold=0.90,
+    )
 
 
 @pytest_asyncio.fixture
@@ -50,7 +75,7 @@ async def miss_client(app: FastAPI) -> AsyncIterator[AsyncClient]:
 
 @pytest_asyncio.fixture
 async def hit_client(app: FastAPI) -> AsyncIterator[AsyncClient]:
-    """Client wired to a pipeline with a pre-seeded cache — every request is a hit."""
+    """Client wired to a pipeline with a pre-seeded cache — every semantic request is a hit."""
     embeddings = FakeEmbeddingProvider()
     repository = FakeCacheRepository(similarity=0.99)
     backend = FakeModelBackend()
@@ -71,9 +96,11 @@ async def test_miss_returns_200_with_correct_json(miss_client: AsyncClient) -> N
     assert response.status_code == 200
     data = response.json()
     assert data["cached"] is False
+    assert data["tier"] == CacheTier.LIVE
     assert data["response"] == "Hello"  # FakeModelBackend echoes the prompt
     assert data["model"] == "fake"
     assert data["similarity"] is None
+    assert data["confidence"] is None
 
 
 async def test_hit_returns_200_with_cached_true(hit_client: AsyncClient) -> None:
@@ -81,8 +108,9 @@ async def test_hit_returns_200_with_cached_true(hit_client: AsyncClient) -> None
     assert response.status_code == 200
     data = response.json()
     assert data["cached"] is True
+    # Exact hit (same normalized prompt) serves via the exact tier.
+    assert data["tier"] in (CacheTier.EXACT, CacheTier.SEMANTIC)
     assert data["response"] == "A programming language."
-    assert data["similarity"] is not None
 
 
 class _ErrorPipeline:

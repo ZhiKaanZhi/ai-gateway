@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from gateway.domain.models import CacheTier
+
 
 class HealthResponse(BaseModel):
     """Liveness probe payload."""
@@ -25,12 +27,19 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """The gateway's answer, annotated with how it was served."""
+    """The gateway's answer, annotated with how it was served.
+
+    ``tier`` records which cache tier answered (exact/semantic/intent/live).
+    ``similarity`` is the cosine distance input for semantic/intent hits.
+    ``confidence`` is the gate's correctness verdict for intent hits — see GLOSSARY.md and D26.
+    """
 
     response: str
     model: str
     cached: bool
+    tier: CacheTier
     similarity: float | None = None
+    confidence: float | None = None
 
 
 class CacheLookupRequest(BaseModel):

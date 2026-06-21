@@ -17,13 +17,17 @@ from fastapi.responses import JSONResponse
 
 from gateway.adapters.backends.openai_compat import OpenAICompatibleBackend
 from gateway.adapters.embeddings import FastembedEmbeddingProvider
+from gateway.adapters.intent_repository import PgVectorIntentRepository, create_intent_pool
 from gateway.adapters.repository import PgVectorCacheRepository, create_cache_pool
+from gateway.adapters.verifier import ModelVerifier
 from gateway.api.routes import router
 from gateway.config import get_settings
 from gateway.domain.errors import BackendError
 from gateway.domain.models import Complexity
 from gateway.services.cache_service import CacheService
 from gateway.services.classifier import HeuristicClassifier
+from gateway.services.intent_extractor import RegexIntentExtractor
+from gateway.services.intent_gate import IntentGate
 from gateway.services.pipeline import RequestPipeline
 from gateway.services.router import CostAwareRouter
 
@@ -37,13 +41,41 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Build singletons on startup, release them on shutdown."""
     settings = get_settings()
 
-    # --- Embeddings + cache ---
+    # --- Embeddings (shared: used by both the semantic cache and the intent tier) ---
     embeddings = FastembedEmbeddingProvider(settings.embedding_model)
+
+    # --- Semantic cache ---
     pool = create_cache_pool(settings.conninfo)
     await pool.open()
     repository = PgVectorCacheRepository(pool)
     cache_service = CacheService(embeddings, repository, threshold=settings.semantic_threshold)
     app.state.cache_service = cache_service
+
+    # --- Intent store ---
+    intent_pool = create_intent_pool(settings.conninfo)
+    await intent_pool.open()
+    intent_repository = PgVectorIntentRepository(intent_pool)
+
+    # --- Intent extractor (stateless, no I/O) ---
+    extractor = RegexIntentExtractor()
+
+    # --- Verifier (cheap model call via a separate httpx client) ---
+    verifier_client = httpx.AsyncClient(
+        base_url=settings.verifier_base_url,
+        timeout=settings.verifier_timeout,
+    )
+    verifier_key = settings.verifier_api_key.get_secret_value() or None
+    verifier = ModelVerifier(verifier_client, settings.verifier_model, verifier_key)
+
+    # --- Intent gate ---
+    intent_gate = IntentGate(
+        verifier,
+        margin_min=settings.intent_margin_min,
+        staleness_max_seconds=settings.intent_staleness_max_seconds,
+        verify_band_lo=settings.intent_verify_band_lo,
+        verify_band_hi=settings.intent_verify_band_hi,
+        verify_pass_threshold=settings.intent_verify_pass_threshold,
+    )
 
     # --- Backend (httpx client owned here; aclose()d on shutdown) ---
     client = httpx.AsyncClient(
@@ -58,13 +90,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     router_ = CostAwareRouter({c: backend for c in Complexity})
 
     # --- Pipeline on app.state so routes can reach it ---
-    app.state.pipeline = RequestPipeline(cache_service, classifier, router_)
+    app.state.pipeline = RequestPipeline(
+        cache_service,
+        classifier,
+        router_,
+        embeddings,
+        extractor,
+        intent_repository,
+        intent_gate,
+        settings.intent_match_threshold,
+    )
 
     try:
         yield
     finally:
         await client.aclose()
+        await verifier_client.aclose()
         await pool.close()
+        await intent_pool.close()
 
 
 async def _on_backend_error(request: Request, exc: Exception) -> JSONResponse:

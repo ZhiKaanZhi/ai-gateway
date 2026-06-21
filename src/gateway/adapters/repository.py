@@ -27,9 +27,23 @@ _LOOKUP_SQL = """
     LIMIT 1
 """
 
+# Exact lookup: prompt_hash is UNIQUE so this is a point-query — no ordering or limit needed.
+_EXACT_LOOKUP_SQL = """
+    SELECT response, model_used
+    FROM cache_entries
+    WHERE prompt_hash = %s
+"""
+
+# Upsert: ON CONFLICT on prompt_hash collapses identical normalized prompts (D21).
+# Refreshing created_at on conflict keeps the entry "fresh" and avoids stale exact hits.
 _STORE_SQL = """
-    INSERT INTO cache_entries (id, prompt, response, model_used, embedding, created_at)
-    VALUES (%s, %s, %s, %s, %s, %s)
+    INSERT INTO cache_entries (id, prompt, prompt_hash, response, model_used, embedding, created_at)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (prompt_hash)
+    DO UPDATE SET
+        response   = EXCLUDED.response,
+        model_used = EXCLUDED.model_used,
+        created_at = EXCLUDED.created_at
 """
 
 
@@ -65,14 +79,26 @@ class PgVectorCacheRepository:
         response, model_used, similarity = row
         return CacheHit(response=response, model_used=model_used, similarity=similarity)
 
+    async def exact_lookup(self, prompt_hash: str) -> CacheHit | None:
+        """Return the stored entry for this normalized-prompt hash, or ``None``."""
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(_EXACT_LOOKUP_SQL, (prompt_hash,))
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        response, model_used = row
+        # Exact hits have similarity = 1.0 by definition (same normalized string).
+        return CacheHit(response=response, model_used=model_used, similarity=1.0)
+
     async def store(self, entry: CacheEntry) -> None:
-        """Persist a cache entry; the embedding binds as a parameter (never interpolated)."""
+        """Upsert a cache entry; the embedding binds as a parameter (never interpolated)."""
         async with self._pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 _STORE_SQL,
                 (
                     entry.id,
                     entry.prompt,
+                    entry.prompt_hash,
                     entry.response,
                     entry.model_used,
                     Vector(entry.embedding),

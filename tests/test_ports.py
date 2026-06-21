@@ -10,15 +10,21 @@ from gateway.domain.ports import (
     CacheRepository,
     ComplexityClassifier,
     EmbeddingProvider,
+    IntentExtractor,
+    IntentRepository,
     ModelBackend,
     ModelRouter,
+    Verifier,
 )
 from tests.conftest import (
     FakeCacheRepository,
     FakeComplexityClassifier,
     FakeEmbeddingProvider,
+    FakeIntentExtractor,
+    FakeIntentRepository,
     FakeModelBackend,
     FakeModelRouter,
+    FakeVerifier,
 )
 
 
@@ -29,3 +35,7 @@ def test_fakes_implement_ports() -> None:
     assert isinstance(backend, ModelBackend)
     assert isinstance(FakeModelRouter(backend), ModelRouter)
     assert isinstance(FakeComplexityClassifier(), ComplexityClassifier)
+    # Slice 3: three new ports
+    assert isinstance(FakeIntentExtractor(), IntentExtractor)
+    assert isinstance(FakeIntentRepository(), IntentRepository)
+    assert isinstance(FakeVerifier(), Verifier)

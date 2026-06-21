@@ -56,7 +56,7 @@ One row per cached prompt/response: `id uuid PK`, `prompt text`, `response text`
 **Cost to reverse:** the store is a disposable cache — `docker compose down -v` and recreate. Adding/changing a column is localized to `db/init.sql` + the two SQL statements in `adapters/repository.py`.
 
 ### D10 — Semantic similarity threshold default `0.95`
-`similarity = 1 - (embedding <=> query)` (cosine); a hit must clear `GATEWAY_SEMANTIC_THRESHOLD`, default `0.95`. The gate lives at the call site (the service passes `threshold` into `CacheRepository.lookup`, per `ports.py`), not baked into SQL — so tuning it never touches the repository. `0.95` is deliberately tight for a *text-answer* cache: a near-paraphrase clears it, but a merely-related prompt does not, keeping false-positive cache hits rare. The intent tier (Slice 3) will gate harder still (`0.97`), because a false positive there fires a *wrong tool call*.
+`similarity = 1 - (embedding <=> query)` (cosine); a hit must clear `GATEWAY_SEMANTIC_THRESHOLD`, default `0.95`. The gate lives at the call site (the service passes `threshold` into `CacheRepository.lookup`, per `ports.py`), not baked into SQL — so tuning it never touches the repository. `0.95` is deliberately tight for a *text-answer* cache: a near-paraphrase clears it, but a merely-related prompt does not, keeping false-positive cache hits rare. ~~The intent tier (Slice 3) will gate harder still (`0.97`), because a false positive there fires a *wrong tool call*.~~ **Superseded by D26:** the intent tier's serve decision is not a higher cosine threshold — it is a *confidence verdict* (correctness, not distance). See D26 for the full treatment.
 **Cost to reverse:** trivial — one env var; no code or schema change.
 
 ### D11 — Embedding model `BAAI/bge-small-en-v1.5` (kept over all-MiniLM-L6-v2)
@@ -102,3 +102,51 @@ Four `GATEWAY_`-prefixed, `.env`-overridable settings: `backend_base_url` (defau
 ### D20 — Tests: three offline layers plus one self-skipping live round-trip
 Offline (no DB, no model): a pipeline test over the fakes (hit serves without calling the backend; miss calls it once and stores once, reusing the miss embedding), an adapter test over `httpx.MockTransport` (canned reply maps correctly; non-2xx / timeout / malformed each raise `BackendError` with the right `is_timeout`; structural `isinstance` against `ModelBackend`), and a `/v1/chat` API test via `dependency_overrides` (hit/miss JSON; `BackendError` → 502, timeout → 504). One live round-trip mirrors the DB integration test: it talks to a running Ollama if reachable and skips cleanly otherwise. The default suite stays fully green with no DB and no model, and Ollama stays out of CI (it isn't reachable there).
 **Cost to reverse:** n/a — additive test coverage.
+
+---
+
+## Slice 3 — Intent caching (the showpiece)
+
+### D21 — Cached unit = text completion
+The unit cached by the intent tier is the same as the other tiers: a plain text completion. Tool/action caching is explicitly out of scope. The wrong-tool-call scenario is kept only as the *motivating story* for why the gate biases to precision (a wrong cached *action* would be worse than a wrong cached sentence), but building real tool execution is a separate, much larger subsystem.
+**Cost to reverse:** high — a tool-call unit is a new subsystem. Unnecessary: the precision machinery is demonstrated on text and the narrative transfers.
+
+### D22 — Cache parameter-independent answers only (Option A)
+The intent tier caches answers whose correctness does **not** depend on the parameter — return policy, refund window, integration guides. Parameters are used by the gate to **refuse** reuse, never to slot-fill. The valuable case is *expensive* recurring answers, not cheap FAQ.
+**Cost to reverse:** medium — slot-filling adds a template + live-refetch path and reopens D21.
+
+### D23 — Tier order: exact → semantic → intent, first-hit-wins
+Exact and semantic short-circuit on match. **Intent short-circuits only on match + confidence-pass; otherwise it falls through to the full pipeline.** The control flow is all in `RequestPipeline.process`.
+**Cost to reverse:** low — control flow in the pipeline, no stored data.
+
+### D24 — Intent match = vector search on parameter-stripped prompts
+The match key is the *canonical* (parameter-stripped) form of the prompt; the bare parameters are stored alongside the answer in `intent_entries`. This is the mechanical reason the intent tier sees "same intent" where the semantic tier saw "different prompt." Open-set (no maintained intent catalog); the "hottest intentions" emerge from what recurs.
+**Cost to reverse:** medium — a closed-set classifier changes the match key + store, but stays behind the intent seam.
+
+### D25 — Gate refuses based on whether the answer used the parameter, not on exact-parameter-match
+Generic answer → reusable across parameters → serve. Parameter-bound answer (the stored answer text contains the parameter it was built from) → refuse on mismatch with the incoming request's parameters → go live. This is "Option B" from the design options.
+**Cost to reverse:** low — gate-internal policy.
+
+### D26 — Confidence = cheap signals + borderline verification (supersedes the D10 parenthetical)
+Cheap signals: top1–top2 match **margin**, **staleness** of the cached entry (age), structural **binding check** (D25 — does the stored answer text contain the stored parameter?). On the *uncertain middle band*, a cheap model is asked "does this cached answer actually answer this new question?" — serve only on a precision-biased pass. **Confidence is a correctness verdict, not a distance.** This is the answer to D10's now-struck-through parenthetical: the intent tier does not use a higher cosine threshold. See also `GLOSSARY.md`.
+**Cost to reverse:** low — dropping the verify step or a signal is a policy change; no schema/port impact.
+
+### D27 — The intent tier gets its own store (`intent_entries`)
+A new table separate from `cache_entries`: `canonical_prompt`, `response`, `model_used`, `embedding vector(384)`, `parameters text[]`, `created_at`. Its own HNSW cosine index. `cache_entries` is untouched. The `parameters` column is persisted at admission so the gate's binding check (D25) can read it back at serve time without re-extracting from the answer text. This store doubles as the long-TTL global "hottest intentions" store; the semantic store stays the per-deployment cache.
+**Cost to reverse:** medium — schema + a repo method; disposable cache, stays behind the seam.
+
+### D28 — Admission routes writes by extraction
+Paramless answer → semantic store (`cache_entries`, as today). Parameterized → intent store **only** (stripped canonical form + parameters); the raw parameterized prompt **never** enters `cache_entries`. No write-time binding check — the read gate (D26) handles binding/staleness. This closes the cross-serve hole created by the gateless semantic tier running first.
+**Cost to reverse:** low — a branch at the store call site.
+
+### D29 — Three new ports; the gate is a service
+`IntentExtractor` (prompt → canonical stripped form + parameters), `IntentRepository` (search stripped embedding → ranked candidates with age + parameters; store), `Verifier` (`verify(question, candidate_answer) -> float` — a score the gate thresholds, so D26's verify band is calibrated from the eval set and not hidden in the adapter). The gate is a *service* (like the pipeline and cache service) — it orchestrates seams, it isn't one. `EmbeddingProvider` is reused for the stripped vector. Five ports → eight; all in `domain/ports.py`.
+**Cost to reverse:** low — collapsing `Verifier` back into a model call is deleting one Protocol + one adapter.
+
+### D30 — The showpiece deliverable is a measured eval
+A small adversarial labeled set: (cached entry, new query, expected serve/refuse). Score the gate as **two separate rates — false serves (dangerous) and false refuses (wasteful)**. Run the same set through a **cosine-only baseline** (serve if similarity ≥ `GATEWAY_COSINE_BASELINE_THRESHOLD`, default 0.97 — literally the D10 collapsed idea). The headline: *cosine-only → N false serves; gate → 0*. The set is also the instrument that **calibrates** the D26 thresholds.
+**Cost to reverse:** n/a — test/eval asset.
+
+### D31 — Multi-customer data hygiene is OUT this slice; cleanup is the committed next slice
+Bound answers are written per D28 but never cross-served; on synthetic single-tenant data they're harmless dead weight. Cleanup (delete-old-entries behind `IntentRepository`, a background timer, a TTL setting) is **designed, not built**, and recorded in `PROGRESS.md` as the next slice. "Evict-on-bound-refuse" is noted as a future free self-clean (the gate already computed the verdict at refuse time).
+**Cost to reverse:** low — TTL/eviction is a column + sweep; per-tenant scoping is larger but stays behind the `IntentRepository` seam.

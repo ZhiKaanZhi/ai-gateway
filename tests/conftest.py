@@ -25,6 +25,9 @@ from gateway.domain.models import (
     CompletionResult,
     Complexity,
     Embedding,
+    ExtractedIntent,
+    IntentCandidate,
+    IntentEntry,
 )
 from gateway.main import create_app
 
@@ -72,6 +75,14 @@ class FakeCacheRepository:
             response=entry.response, model_used=entry.model_used, similarity=self._similarity
         )
 
+    async def exact_lookup(self, prompt_hash: str) -> CacheHit | None:
+        for entry in reversed(self.entries):
+            if entry.prompt_hash == prompt_hash:
+                return CacheHit(
+                    response=entry.response, model_used=entry.model_used, similarity=1.0
+                )
+        return None
+
     async def store(self, entry: CacheEntry) -> None:
         self.entries.append(entry)
 
@@ -108,6 +119,46 @@ class FakeComplexityClassifier:
         return Complexity.SIMPLE
 
 
+class FakeIntentExtractor:
+    """``IntentExtractor`` that strips nothing by default (paramless prompts)."""
+
+    def __init__(self, canonical: str | None = None, parameters: list[str] | None = None) -> None:
+        self._canonical = canonical
+        self._parameters = parameters or []
+
+    def extract(self, prompt: str) -> ExtractedIntent:
+        return ExtractedIntent(
+            canonical=self._canonical if self._canonical is not None else prompt,
+            parameters=self._parameters,
+        )
+
+
+class FakeIntentRepository:
+    """In-memory ``IntentRepository``."""
+
+    def __init__(self, candidates: list[IntentCandidate] | None = None) -> None:
+        self.entries: list[IntentEntry] = []
+        self._candidates = candidates or []
+
+    async def search(
+        self, embedding: Embedding, threshold: float, limit: int = 5
+    ) -> list[IntentCandidate]:
+        return self._candidates[:limit]
+
+    async def store(self, entry: IntentEntry) -> None:
+        self.entries.append(entry)
+
+
+class FakeVerifier:
+    """``Verifier`` that returns a fixed score."""
+
+    def __init__(self, score: float = 1.0) -> None:
+        self._score = score
+
+    async def verify(self, question: str, candidate_answer: str) -> float:
+        return self._score
+
+
 @pytest.fixture
 def embeddings() -> FakeEmbeddingProvider:
     return FakeEmbeddingProvider()
@@ -128,6 +179,7 @@ def sample_entry() -> CacheEntry:
     return CacheEntry(
         id=uuid4(),
         prompt="hello",
+        prompt_hash="abc123",
         response="hi",
         model_used="fake",
         embedding=[0.0] * 384,

@@ -26,6 +26,15 @@ class Complexity(StrEnum):
     COMPLEX = "complex"
 
 
+class CacheTier(StrEnum):
+    """Which tier of the three-tier cache served the request (D23)."""
+
+    EXACT = "exact"
+    SEMANTIC = "semantic"
+    INTENT = "intent"
+    LIVE = "live"
+
+
 class CompletionRequest(BaseModel):
     """A single inbound request to be served by a model backend."""
 
@@ -41,10 +50,11 @@ class CompletionResult(BaseModel):
 
 
 class CacheEntry(BaseModel):
-    """A stored prompt/response pair plus its embedding — one row in the cache."""
+    """A stored prompt/response pair plus its embedding — one row in the semantic cache."""
 
     id: UUID
     prompt: str
+    prompt_hash: str
     response: str
     model_used: str
     embedding: Embedding
@@ -71,15 +81,62 @@ class CacheMiss:
     embedding: Embedding
 
 
+# ---------------------------------------------------------------------------
+# Intent tier models (D24, D27, D29)
+# ---------------------------------------------------------------------------
+
+
+class ExtractedIntent(BaseModel):
+    """The result of stripping parameters from a prompt.
+
+    ``canonical`` is the parameter-free form used as the intent-match key;
+    ``parameters`` are the bare values that were stripped out, persisted alongside
+    the cached answer so the gate's binding check (D25) can read them back.
+    """
+
+    canonical: str
+    parameters: list[str]
+
+
+class IntentEntry(BaseModel):
+    """One row in the ``intent_entries`` table (D27)."""
+
+    id: UUID
+    canonical_prompt: str
+    response: str
+    model_used: str
+    embedding: Embedding
+    parameters: list[str]
+    created_at: datetime
+
+
+class IntentCandidate(BaseModel):
+    """A ranked candidate returned by :class:`IntentRepository.search`.
+
+    ``parameters`` comes from the stored column — the values that were in the
+    prompt when the answer was originally generated, needed by the gate's
+    binding check (D25).
+    """
+
+    response: str
+    model_used: str
+    similarity: float = Field(ge=0.0, le=1.0)
+    age_seconds: float = Field(ge=0.0)
+    parameters: list[str]
+
+
 class ServedCompletion(BaseModel):
     """What the pipeline returns: a completion plus how it was served.
 
-    Caching is the pipeline's concern, not a backend's, so ``cached`` and ``similarity`` live here
-    rather than on :class:`CompletionResult` or the :class:`ModelBackend` port — the same separation
-    as D12 (caching metadata must not touch the port).
+    ``tier`` records which cache tier (or the live backend) answered.
+    ``similarity`` is the cosine distance input (semantic / intent match).
+    ``confidence`` is the gate's correctness verdict for intent hits — a different
+    thing from similarity; see GLOSSARY.md and D26.
     """
 
     text: str
     model: str
     cached: bool
+    tier: CacheTier
     similarity: float | None = None
+    confidence: float | None = None

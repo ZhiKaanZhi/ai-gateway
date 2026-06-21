@@ -70,9 +70,7 @@ async def test_malformed_body_empty_object_raises_backend_error() -> None:
 
 
 async def test_malformed_body_empty_choices_raises_backend_error() -> None:
-    backend = _make_backend(
-        httpx.MockTransport(lambda r: _canned_response(body={"choices": []}))
-    )
+    backend = _make_backend(httpx.MockTransport(lambda r: _canned_response(body={"choices": []})))
     with pytest.raises(BackendError) as exc_info:
         await backend.complete(CompletionRequest(prompt="hi"))
     assert exc_info.value.is_timeout is False

@@ -51,18 +51,14 @@ class OpenAICompatibleBackend:
         }
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         try:
-            response = await self._client.post(
-                "/chat/completions", json=payload, headers=headers
-            )
+            response = await self._client.post("/chat/completions", json=payload, headers=headers)
         except httpx.TimeoutException as exc:
             raise BackendError(f"backend timed out: {exc}", is_timeout=True) from exc
         except httpx.HTTPError as exc:
             raise BackendError(f"backend transport error: {exc}", is_timeout=False) from exc
 
         if response.status_code // 100 != 2:
-            raise BackendError(
-                f"backend returned {response.status_code}", is_timeout=False
-            )
+            raise BackendError(f"backend returned {response.status_code}", is_timeout=False)
 
         try:
             data: dict[str, Any] = response.json()

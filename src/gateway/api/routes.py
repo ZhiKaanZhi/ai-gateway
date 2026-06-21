@@ -71,9 +71,7 @@ async def cache_store(request: CacheStoreRequest, cache: CacheServiceDep) -> Cac
 @router.post("/v1/chat")
 async def chat(request: ChatRequest, pipeline: PipelineDep) -> ChatResponse:
     """Serve a prompt through the cache/route pipeline."""
-    served = await pipeline.process(
-        CompletionRequest(prompt=request.prompt, model=request.model)
-    )
+    served = await pipeline.process(CompletionRequest(prompt=request.prompt, model=request.model))
     return ChatResponse(
         response=served.text,
         model=served.model,

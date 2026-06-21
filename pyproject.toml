@@ -60,4 +60,5 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "integration: touches a real Postgres+pgvector DB; skipped when none is reachable",
+    "live: hits a running local model backend (Ollama); skipped when none is reachable",
 ]

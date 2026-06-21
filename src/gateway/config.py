@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # --- Cache similarity gates (1 - cosine distance). Intent tier needs the strongest gate. ---
     semantic_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
     intent_threshold: float = Field(default=0.97, ge=0.0, le=1.0)
+
+    # --- Model backend (OpenAI-compatible; local Ollama is the free dev default) ---
+    backend_base_url: str = "http://localhost:11434/v1"
+    backend_model: str = "gemma3:1b"  # run `ollama pull gemma3:1b`
+    # Masked so a stray log or settings dump never leaks a live key once the URL points at a paid
+    # provider. Blank default → the adapter omits the auth header entirely.
+    backend_api_key: SecretStr = SecretStr("")
+    backend_timeout: float = 30.0
 
     @property
     def conninfo(self) -> str:

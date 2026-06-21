@@ -74,3 +74,31 @@ PG18 images store data in a major-version subdirectory and expect the volume at 
 ### D14 — Similarity ranking stays in SQL, not the service
 The nearest-neighbour search **and** its threshold gate live in the `lookup` query (`ORDER BY embedding <=> %s … WHERE 1 - (embedding <=> %s) >= %s`), not in the service. This is not business logic leaking into SQL — it *is* the search operation, and it's the only place that can use the HNSW index. Pulling ranking app-side would force loading every row and a full-table scan in Python, discarding the index that is the whole point of pgvector. The real layer boundary isn't "ranking vs. orchestration", it's the `CacheRepository` port: all raw SQL is confined to `adapters/repository.py`, so the service depends on the port, not the query, and the entire vector store is swappable (pgvector → a dedicated vector DB) without the service knowing. The service still owns the *policy* — it passes the `threshold` and decides what a hit/miss means downstream (D12); the repository owns the *mechanism*.
 **Cost to reverse:** n/a — this is the architecture, not a tunable. Changing the store is an adapter swap behind the port (see D2's scaling note).
+
+---
+
+## Slice 2 — Pipeline skeleton + one real backend
+
+### D15 — The pipeline returns a new `ServedCompletion`, not a `CompletionResult`
+`RequestPipeline.process` returns `ServedCompletion{text, model, cached: bool, similarity: float | None}`; the route maps it to `ChatResponse`. `ChatResponse` needs `cached` + `similarity`, but a `ModelBackend` has no concept of caching, so that metadata must not touch `CompletionResult` or the `ModelBackend` port — the same separation move as D12 (caching is the *service's* concern, not the backend's). The ports and `CompletionRequest`/`CompletionResult` are unchanged.
+**Cost to reverse:** trivial — localized to `domain/models.py`, `services/pipeline.py`, and the one route; nothing else depends on the shape.
+
+### D16 — Real backend `OpenAICompatibleBackend` over httpx; Ollama is the free dev default
+`adapters/backends/openai_compat.py` implements `ModelBackend` against the OpenAI chat-completions contract. **All `httpx` is confined to this adapter** — the pipeline and routes never import it (the same confinement rule as raw SQL behind the repository, D14). It is named for the *contract*, not the provider, so Groq/OpenAI later is a base-URL + key change, not a new adapter. The `httpx.AsyncClient` is owned by the composition root: built in the `main.py` lifespan with the configured `base_url` + timeout, injected into the backend, and `aclose()`d on shutdown (mirroring the psycopg pool's open/close). The dev target is local Ollama's OpenAI-compatible endpoint — free, no key.
+**Cost to reverse:** low — a new provider is config (base URL + key + model); a different *contract* is a new adapter behind the unchanged `ModelBackend` port.
+
+### D17 — Backend failure contract: explicit timeout, no retries, `BackendError`, best-effort store
+(1) The timeout is explicit and configurable (`GATEWAY_BACKEND_TIMEOUT`), never httpx's implicit default. (2) No retries this slice. (3) The adapter raises a domain `BackendError(is_timeout: bool)` (in `domain/errors.py`) on a transport error/timeout, a non-2xx response, or a malformed body (no `choices`); `httpx` never escapes the adapter. One FastAPI exception handler in `create_app` maps `BackendError` → 504 when `is_timeout` else 502 (Starlette types the handler arg as `Exception`; it's narrowed back to `BackendError` so `mypy --strict` passes). (4) A cache **store** failure *after* a successful generation is logged and swallowed — best-effort cache-aside write, the caller still gets their answer; a cache **lookup** failure still propagates. (5) Non-streaming only (`stream: false`).
+**Cost to reverse:** low — retries/backoff or a richer error taxonomy are additive inside the adapter + handler; callers depend only on `BackendError`'s two-way split.
+
+### D18 — Stubs stay behaviour-real: constant classifier, genuine one-row routing table
+The classifier returns a constant tier (`Complexity.SIMPLE`); the router does a genuine lookup against a `Complexity -> ModelBackend` table built in the composition root with **every** tier pointing at the single backend. Adding a real tier later is one enum value + one row; an unmapped tier fails loudly (raises), never mis-routes. This keeps the seams exercised end-to-end now, so Slice 3 fills the bodies behind unchanged ports.
+**Cost to reverse:** n/a — these are the stub bodies later slices replace in place behind `ComplexityClassifier` / `ModelRouter`.
+
+### D19 — Backend config; the API key is a masked secret from day one
+Four `GATEWAY_`-prefixed, `.env`-overridable settings: `backend_base_url` (default local Ollama OpenAI-compatible endpoint), `backend_model` (default `gemma3:1b` — must be `ollama pull`ed), `backend_api_key` as a masked `SecretStr` (blank default → the adapter omits the auth header), and `backend_timeout`. Masking stays on even in dev so a stray log or settings dump never leaks a live key once the endpoint points at a paid provider.
+**Cost to reverse:** trivial — env vars; no code or schema change.
+
+### D20 — Tests: three offline layers plus one self-skipping live round-trip
+Offline (no DB, no model): a pipeline test over the fakes (hit serves without calling the backend; miss calls it once and stores once, reusing the miss embedding), an adapter test over `httpx.MockTransport` (canned reply maps correctly; non-2xx / timeout / malformed each raise `BackendError` with the right `is_timeout`; structural `isinstance` against `ModelBackend`), and a `/v1/chat` API test via `dependency_overrides` (hit/miss JSON; `BackendError` → 502, timeout → 504). One live round-trip mirrors the DB integration test: it talks to a running Ollama if reachable and skips cleanly otherwise. The default suite stays fully green with no DB and no model, and Ollama stays out of CI (it isn't reachable there).
+**Cost to reverse:** n/a — additive test coverage.

@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from gateway.domain.models import (
@@ -76,13 +77,17 @@ class FakeCacheRepository:
 
 
 class FakeModelBackend:
-    """Echoing ``ModelBackend`` for tests."""
+    """Echoing ``ModelBackend`` for tests; counts its calls."""
+
+    def __init__(self) -> None:
+        self.calls = 0
 
     @property
     def name(self) -> str:
         return "fake"
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
+        self.calls += 1
         return CompletionResult(text=request.prompt, model=self.name)
 
 
@@ -130,14 +135,24 @@ def sample_entry() -> CacheEntry:
     )
 
 
+@pytest.fixture
+def app() -> FastAPI:
+    """A fresh FastAPI app instance.
+
+    Tests that need ``dependency_overrides`` can mutate this fixture's app before passing it to
+    ``AsyncClient`` — the ASGITransport client skips the lifespan, so fakes never need to open a
+    real pool or httpx client.
+    """
+    return create_app()
+
+
 @pytest_asyncio.fixture
-async def client() -> AsyncIterator[AsyncClient]:
+async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """An HTTP client bound to the app via ASGI transport.
 
     ``ASGITransport`` dispatches requests directly and does not run startup/shutdown events;
     once the lifespan wires real resources (the pool), tests needing them will drive it explicitly.
     """
-    app = create_app()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
         yield http

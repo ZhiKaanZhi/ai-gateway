@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 
 from gateway.api.schemas import (
     CacheLookupRequest,
@@ -17,8 +17,9 @@ from gateway.api.schemas import (
     ChatResponse,
     HealthResponse,
 )
-from gateway.domain.models import CacheHit
+from gateway.domain.models import CacheHit, CompletionRequest
 from gateway.services.cache_service import CacheService
+from gateway.services.pipeline import RequestPipeline
 
 router = APIRouter()
 
@@ -30,7 +31,14 @@ def get_cache_service(request: Request) -> CacheService:
     return service
 
 
+def get_pipeline(request: Request) -> RequestPipeline:
+    """Hand handlers the pipeline singleton wired in the lifespan."""
+    pipeline: RequestPipeline = request.app.state.pipeline
+    return pipeline
+
+
 CacheServiceDep = Annotated[CacheService, Depends(get_cache_service)]
+PipelineDep = Annotated[RequestPipeline, Depends(get_pipeline)]
 
 
 @router.get("/health")
@@ -61,10 +69,14 @@ async def cache_store(request: CacheStoreRequest, cache: CacheServiceDep) -> Cac
 
 
 @router.post("/v1/chat")
-async def chat(request: ChatRequest) -> ChatResponse:
-    """Serve a prompt through the cache/route pipeline.
-
-    Stub: the request pipeline is not implemented in this slice, so this honestly
-    answers 501 rather than declaring a contract it does not yet fulfil.
-    """
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="not implemented")
+async def chat(request: ChatRequest, pipeline: PipelineDep) -> ChatResponse:
+    """Serve a prompt through the cache/route pipeline."""
+    served = await pipeline.process(
+        CompletionRequest(prompt=request.prompt, model=request.model)
+    )
+    return ChatResponse(
+        response=served.text,
+        model=served.model,
+        cached=served.cached,
+        similarity=served.similarity,
+    )

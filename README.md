@@ -19,6 +19,20 @@ uv run uvicorn gateway.main:app --reload
 
 ## Status
 
-Harness only: the ports-and-adapters skeleton, config, and a live `/health` endpoint.
-Service and adapter implementations (semantic cache, pipeline, intent caching, classifier,
-router) are typed stubs awaiting their own slices.
+**Slice 2 live.** `POST /v1/chat` runs the full cache-aside pipeline end-to-end:
+- Semantic cache hit → returns immediately without a model call (`cached: true`, `similarity` reported).
+- Cache miss → classified (constant tier, stub), routed, served by `OpenAICompatibleBackend` over
+  async httpx (Ollama locally; Groq/OpenAI later is a base-URL + key change), stored reusing the
+  miss's embedding, returned (`cached: false`).
+- Backend failures surface as 502 (non-2xx / transport) or 504 (timeout).
+
+**Stubbed / pending:** complexity classifier (always returns SIMPLE), multi-backend routing,
+intent caching (Slice 3 — the showpiece: three-tier cache with confidence scoring + fallback).
+
+To use the live path, run a local [Ollama](https://ollama.com) and pull the default model:
+```bash
+ollama pull gemma3:1b
+python -m gateway    # Windows-safe SelectorEventLoop launcher
+curl -X POST http://localhost:8000/v1/chat -H "Content-Type: application/json" \
+     -d '{"prompt": "What is the capital of France?"}'
+```

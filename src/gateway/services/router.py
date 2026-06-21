@@ -19,4 +19,9 @@ class CostAwareRouter:
         self._backends = backends
 
     def select(self, complexity: Complexity) -> ModelBackend:
-        raise NotImplementedError
+        try:
+            return self._backends[complexity]
+        except KeyError as exc:
+            # Fail loudly: an unmapped tier must never silently mis-route. Adding a new tier later
+            # requires one enum value + one row in the composition root's table.
+            raise KeyError(f"no backend mapped for complexity {complexity!r}") from exc

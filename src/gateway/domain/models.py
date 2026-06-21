@@ -69,3 +69,17 @@ class CacheMiss:
     """
 
     embedding: Embedding
+
+
+class ServedCompletion(BaseModel):
+    """What the pipeline returns: a completion plus how it was served.
+
+    Caching is the pipeline's concern, not a backend's, so ``cached`` and ``similarity`` live here
+    rather than on :class:`CompletionResult` or the :class:`ModelBackend` port — the same separation
+    as D12 (caching metadata must not touch the port).
+    """
+
+    text: str
+    model: str
+    cached: bool
+    similarity: float | None = None

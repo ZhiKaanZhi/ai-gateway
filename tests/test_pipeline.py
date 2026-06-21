@@ -183,9 +183,7 @@ async def test_intent_bound_answer_falls_through_to_live() -> None:
     )
     candidate2 = _make_candidate(similarity=0.80)
     intent_repo = FakeIntentRepository(candidates=[candidate, candidate2])
-    extractor = FakeIntentExtractor(
-        canonical="Where is order {ID}?", parameters=["2222"]
-    )
+    extractor = FakeIntentExtractor(canonical="Where is order {ID}?", parameters=["2222"])
     pipeline = _make_pipeline(
         embeddings, repository, backend, extractor=extractor, intent_repo=intent_repo
     )

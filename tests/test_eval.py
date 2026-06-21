@@ -18,9 +18,8 @@ async def test_gate_false_serves_zero() -> None:
     """Gate must produce zero false serves on the adversarial set (D30)."""
     results = await run_eval(verifier_score=0.0)
     false_serves = [r for r in results if r.gate_false_serve]
-    assert false_serves == [], (
-        f"Gate produced {len(false_serves)} false serve(s): "
-        + ", ".join(r.case_id for r in false_serves)
+    assert false_serves == [], f"Gate produced {len(false_serves)} false serve(s): " + ", ".join(
+        r.case_id for r in false_serves
     )
 
 

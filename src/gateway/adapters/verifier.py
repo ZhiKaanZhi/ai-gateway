@@ -52,9 +52,7 @@ class ModelVerifier:
             "temperature": 0.0,
         }
         try:
-            resp = await self._client.post(
-                "/chat/completions", json=payload, headers=self._headers
-            )
+            resp = await self._client.post("/chat/completions", json=payload, headers=self._headers)
             resp.raise_for_status()
             body = resp.json()
             text = body["choices"][0]["message"]["content"].strip()

@@ -49,9 +49,7 @@ class IntentGate:
         self._band_hi = verify_band_hi
         self._verify_pass = verify_pass_threshold
 
-    async def evaluate(
-        self, question: str, candidates: list[IntentCandidate]
-    ) -> GateVerdict:
+    async def evaluate(self, question: str, candidates: list[IntentCandidate]) -> GateVerdict:
         """Evaluate the candidate list against the question. Returns a serve/refuse verdict."""
         if not candidates:
             return GateVerdict(serve=False, confidence=0.0)
@@ -63,9 +61,7 @@ class IntentGate:
             return GateVerdict(serve=False, confidence=0.0)
 
         # --- Cheap signal 2: top1–top2 margin ---
-        margin = (
-            (best.similarity - candidates[1].similarity) if len(candidates) > 1 else 1.0
-        )
+        margin = (best.similarity - candidates[1].similarity) if len(candidates) > 1 else 1.0
         if margin < self._margin_min:
             return GateVerdict(serve=False, confidence=0.0)
 

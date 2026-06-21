@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run ruff check src tests && uv run mypy src && uv run pytest -q"
+            "command": "uv run ruff check src tests && uv run ruff format --check . && uv run mypy src && uv run pytest -q"
           }
         ]
       }

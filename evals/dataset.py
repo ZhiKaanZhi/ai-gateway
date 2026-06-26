@@ -31,6 +31,12 @@ class EvalCase:
     (single-token difference), the surface-distant cases score low. It drives both the gate's
     candidate similarity and the cosine-only baseline, so the offline harness reproduces the real
     contrast without needing the model loaded. (Re-run against a live embedder to confirm.)
+
+    ``new_parameters`` are the parameters the extractor pulls from ``new_question`` — what the gate
+    compares against ``cached_parameters`` to decide value-independent / same-value / value-changed
+    (D32). ``verify_score`` is the score the mock model returns *if* the gate reaches the Verifier
+    for this case (the value-changed, non-echoing path); cheap-path cases ignore it. ``None`` means
+    the case is never expected to reach the model.
     """
 
     id: str
@@ -38,22 +44,25 @@ class EvalCase:
     cached_answer: str
     cached_parameters: list[str]
     new_question: str
+    new_parameters: list[str]
     expected: str  # "serve" | "refuse"
     cosine: float
     note: str
+    verify_score: float | None = None
 
 
 EVAL_CASES: list[EvalCase] = [
-    # --- SURFACE-CLOSE, ANSWER-DIFFERENT (should refuse) ---
+    # --- SURFACE-CLOSE, ANSWER ECHOES THE VALUE → reject-fast (should refuse, no model call) ---
     EvalCase(
         id="order-tracking-1",
         cached_question="Where is order 1111?",
         cached_answer="Order 1111 is scheduled to ship on Thursday, June 26.",
         cached_parameters=["1111"],
         new_question="Where is order 2222?",
+        new_parameters=["2222"],
         expected="refuse",
         cosine=0.98,  # one digit differs → near-identical in embedding space
-        note="Answer is bound to order number 1111; serving it for 2222 is factually wrong.",
+        note="Value changed (1111→2222); answer echoes 1111 → reject-fast, no Verifier call.",
     ),
     EvalCase(
         id="order-tracking-2",
@@ -61,9 +70,10 @@ EVAL_CASES: list[EvalCase] = [
         cached_answer="Order ORD-500 was delivered on June 19.",
         cached_parameters=["ORD-500"],
         new_question="What is the status of order ORD-501?",
+        new_parameters=["ORD-501"],
         expected="refuse",
         cosine=0.97,
-        note="Answer bound to ORD-500; ORD-501 may have a different status.",
+        note="Answer echoes ORD-500 → reject-fast; ORD-501 may have a different status.",
     ),
     EvalCase(
         id="translation-1",
@@ -71,12 +81,13 @@ EVAL_CASES: list[EvalCase] = [
         cached_answer="'Hello' in Spanish is 'Hola'.",
         cached_parameters=["hello"],
         new_question="Translate 'goodbye' to Spanish.",
+        new_parameters=["goodbye"],
         expected="refuse",
         cosine=0.97,
         note=(
-            "The extractor strips the quoted literal as a parameter ('hello'), and the cached "
-            "answer reuses it ('Hello'/'Hola'). The binding check (D25) sees the answer contains "
-            "the stored parameter → bound → refuse, regardless of the Verifier score."
+            "The cached answer reuses the stripped literal ('Hello') → echoes the old value → "
+            "reject-fast (no Verifier call). Contrast translate-transform, whose answer ('Hola.') "
+            "does NOT echo and so must go through the Verifier."
         ),
     ),
     EvalCase(
@@ -85,11 +96,88 @@ EVAL_CASES: list[EvalCase] = [
         cached_answer="Account ACC-9001 has a balance of $3,421.50.",
         cached_parameters=["ACC-9001"],
         new_question="What is the balance on account ACC-9002?",
+        new_parameters=["ACC-9002"],
         expected="refuse",
         cosine=0.98,
-        note="Balance is account-specific; cross-serving is wrong.",
+        note="Answer echoes ACC-9001 → reject-fast; balance is account-specific.",
     ),
-    # --- SURFACE-DISTANT, ANSWER-SAME (should serve) ---
+    # --- TRANSFORM-BOUND: value changed, answer does NOT echo → Verifier called, low → refuse ---
+    # The F5-closing cases: a substring test cannot see the binding, so the model must.
+    EvalCase(
+        id="translate-transform",
+        cached_question="Translate 'hello' to Spanish.",
+        cached_answer="Hola.",
+        cached_parameters=["hello"],
+        new_question="Translate 'goodbye' to Spanish.",
+        new_parameters=["goodbye"],
+        expected="refuse",
+        cosine=0.98,
+        verify_score=0.1,
+        note="The exact proven hole: 'Hola.' shares no letters with 'hello' → Verifier → refuse.",
+    ),
+    EvalCase(
+        id="define-transform",
+        cached_question="Define 'ephemeral'.",
+        cached_answer="Lasting a very short time.",
+        cached_parameters=["ephemeral"],
+        new_question="Define 'gregarious'.",
+        new_parameters=["gregarious"],
+        expected="refuse",
+        cosine=0.98,
+        verify_score=0.1,
+        note="Definition is bound to the word; answer doesn't echo it → Verifier refuses.",
+    ),
+    EvalCase(
+        id="arithmetic-transform",
+        cached_question="What is 7 times 8?",
+        cached_answer="56.",
+        cached_parameters=["7", "8"],
+        new_question="What is 6 times 9?",
+        new_parameters=["6", "9"],
+        expected="refuse",
+        cosine=0.98,
+        verify_score=0.1,
+        note="'56.' is bound to 7×8 but echoes neither operand → Verifier → refuse (54 ≠ 56).",
+    ),
+    EvalCase(
+        id="convert-transform",
+        cached_question="Convert 10 USD to EUR.",
+        cached_answer="≈ €9.20.",
+        cached_parameters=["10"],
+        new_question="Convert 50 USD to EUR.",
+        new_parameters=["50"],
+        expected="refuse",
+        cosine=0.98,
+        verify_score=0.1,
+        note="Converted amount is bound to 10; answer doesn't echo it → Verifier refuses.",
+    ),
+    # --- VALUE-INDEPENDENT but PARAMETERISED: value changed, no echo → Verifier → serve ---
+    # The win cosine can't take: the answer generalises across the value, and only the model knows.
+    EvalCase(
+        id="return-policy-order",
+        cached_question="Return policy for order #1111?",
+        cached_answer="All orders can be returned within 30 days.",
+        cached_parameters=["1111"],
+        new_question="Return policy for order #2222?",
+        new_parameters=["2222"],
+        expected="serve",
+        cosine=0.98,
+        verify_score=0.9,
+        note="Answer never used the order number → generalises; Verifier confirms → serve.",
+    ),
+    EvalCase(
+        id="password-reset",
+        cached_question="How do I reset the password for account ACC-9001?",
+        cached_answer="Go to Settings → Security → Reset.",
+        cached_parameters=["ACC-9001"],
+        new_question="How do I reset the password for account ACC-9002?",
+        new_parameters=["ACC-9002"],
+        expected="serve",
+        cosine=0.98,
+        verify_score=0.9,
+        note="Reset steps are the same for any account → Verifier confirms → serve.",
+    ),
+    # --- SURFACE-DISTANT, PARAMLESS, ANSWER-SAME (should serve on cheap signals, no model call) ---
     EvalCase(
         id="return-policy-1",
         cached_question="How do I return an item I ordered?",
@@ -97,6 +185,7 @@ EVAL_CASES: list[EvalCase] = [
         "Go to Orders → Return, print the label, and drop it off.",
         cached_parameters=[],
         new_question="ugh how do I send something back that I bought",
+        new_parameters=[],
         expected="serve",
         cosine=0.82,  # same intent, very different words → clears a real embedder but misses 0.97
         note="Completely different wording, but the same generic return policy answers both.",
@@ -107,6 +196,7 @@ EVAL_CASES: list[EvalCase] = [
         cached_answer="Our refund window is 30 days from the date of purchase.",
         cached_parameters=[],
         new_question="How many days do I have to get my money back?",
+        new_parameters=[],
         expected="serve",
         cosine=0.80,
         note="Different framing of the same paramless policy question.",
@@ -117,6 +207,7 @@ EVAL_CASES: list[EvalCase] = [
         cached_answer="```python\ns = 'hello'\nreversed_s = s[::-1]\n```",
         cached_parameters=[],
         new_question="how do I flip a string around in python, code pls",
+        new_parameters=[],
         expected="serve",
         cosine=0.78,
         note="Idiomatic code answer is paramless and correct for both phrasings.",
@@ -128,6 +219,7 @@ EVAL_CASES: list[EvalCase] = [
         "and authorize with your Salesforce admin credentials.",
         cached_parameters=[],
         new_question="Steps to link Salesforce to my workspace?",
+        new_parameters=[],
         expected="serve",
         cosine=0.83,
         note="Integration walkthrough is paramless and reusable across phrasings.",

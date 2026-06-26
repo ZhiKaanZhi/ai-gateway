@@ -74,8 +74,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         verifier,
         margin_min=settings.intent_margin_min,
         staleness_max_seconds=settings.intent_staleness_max_seconds,
-        verify_band_lo=settings.intent_verify_band_lo,
-        verify_band_hi=settings.intent_verify_band_hi,
         verify_pass_threshold=settings.intent_verify_pass_threshold,
     )
 

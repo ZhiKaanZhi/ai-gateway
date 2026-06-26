@@ -130,8 +130,10 @@ class ServedCompletion(BaseModel):
 
     ``tier`` records which cache tier (or the live backend) answered.
     ``similarity`` is the cosine distance input (semantic / intent match).
-    ``confidence`` is the gate's correctness verdict for intent hits — a different
-    thing from similarity; see GLOSSARY.md and D26.
+    ``confidence`` is the intent gate's Verifier score, set **only when the model ran** (a
+    value-mismatch reuse, D32/D34); a cheap-signal serve carries ``None``. ``None`` means
+    "served on cheap signals, not model-scored" — **not** low confidence. It is a different
+    axis from similarity; see GLOSSARY.md and D34.
     """
 
     text: str

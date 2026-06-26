@@ -43,6 +43,8 @@ Walk the three canonical cases through the gate:
 
 The discriminator is never "does the question have a parameter" (both do). It's "did the **answer** use it." That's the thing similarity structurally cannot see, and it's why this tier earns its existence instead of being the semantic tier with a bigger number.
 
+> **Revised post-ship (D32, closes F5).** "Did the answer use it" is decided by comparing the incoming request's parameters against the cached candidate's. A substring check (*does the stored answer text contain the old value?*) is now only a **reject-fast** signal — sound to refuse on, but its absence proves nothing, because a **transform** answer replaces the value rather than echoing it (`"Translate 'hello'"` → `"Hola."` shares no letters with "hello"). When the value changed and the answer doesn't echo it, the **Verifier** decides the reuse. The original shipped gate used substring-contains *as the binding decision* and gated the Verifier on an unreachable confidence band, so it false-served exactly the translate-'hello'-for-'goodbye' case above — see `FAILURES.md` F5.
+
 ## What we cache, and what we refuse
 
 We cache only answers whose correctness **doesn't depend on the parameter** — return policy, refund window, "is X compatible with Y," integration how-tos. Parameters are used to *refuse* reuse, never to fill in blanks. (We considered caching templates like "Order {id} arrives {date}" and filling them per request — but to fill {date} you still have to hit the database live every time, so the cache would save the sentence and not the work. Pointless. See D22.)

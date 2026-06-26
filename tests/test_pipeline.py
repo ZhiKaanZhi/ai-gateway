@@ -34,19 +34,18 @@ def _make_pipeline(
     *,
     extractor: FakeIntentExtractor | None = None,
     intent_repo: FakeIntentRepository | None = None,
+    verifier: FakeVerifier | None = None,
     verifier_score: float = 0.0,
     sem_similarity: float = 0.0,
 ) -> RequestPipeline:
     cache = CacheService(embeddings, repository, threshold=0.95)
     classifier = HeuristicClassifier()
     router = CostAwareRouter({c: backend for c in Complexity})
-    verifier = FakeVerifier(score=verifier_score)
+    verifier = verifier or FakeVerifier(score=verifier_score)
     gate = IntentGate(
         verifier,
         margin_min=0.05,
         staleness_max_seconds=86400.0,
-        verify_band_lo=0.70,
-        verify_band_hi=0.85,
         verify_pass_threshold=0.80,
     )
     return RequestPipeline(
@@ -133,14 +132,14 @@ def _make_candidate(
 
 
 async def test_intent_serve_sets_tier_and_confidence() -> None:
-    """A paramless cached answer clears the gate and returns tier=INTENT."""
+    """A paramless cached answer clears the gate on cheap signals → tier=INTENT, confidence None."""
     embeddings = FakeEmbeddingProvider()
     repository = FakeCacheRepository(similarity=0.0)  # no semantic hit
     backend = FakeModelBackend()
 
     candidate = _make_candidate(
         response="Generic return policy: 30 days.",
-        parameters=[],  # paramless answer → not bound
+        parameters=[],  # paramless answer → value-independent → serves without the model
         similarity=0.97,
         age_seconds=100.0,
     )
@@ -148,15 +147,14 @@ async def test_intent_serve_sets_tier_and_confidence() -> None:
     candidate2 = _make_candidate(similarity=0.80)
     intent_repo = FakeIntentRepository(candidates=[candidate, candidate2])
     extractor = FakeIntentExtractor(canonical="How do I {ACTION} an order?", parameters=[])
-    # verifier_score=0.95: the candidate (sim=0.97, age=100s, margin=0.17) lands in the verify
-    # band; a high verifier score is needed for the gate to pass (D26).
+    verifier = FakeVerifier(score=0.95)  # must NOT be consulted for a value-independent answer
     pipeline = _make_pipeline(
         embeddings,
         repository,
         backend,
         extractor=extractor,
         intent_repo=intent_repo,
-        verifier_score=0.95,
+        verifier=verifier,
     )
 
     result = await pipeline.process(CompletionRequest(prompt="How do I return an order?"))
@@ -164,8 +162,81 @@ async def test_intent_serve_sets_tier_and_confidence() -> None:
     assert isinstance(result, ServedCompletion)
     assert result.cached is True
     assert result.tier == CacheTier.INTENT
-    assert result.confidence is not None
+    assert result.confidence is None  # served on cheap signals, not model-scored (D34)
     assert backend.calls == 0
+    assert verifier.calls == 0
+
+
+async def test_intent_transform_refuses_falls_through_to_live() -> None:
+    """F5 regression: a transform-bound answer for a changed value is refused via the Verifier.
+
+    Cached "Translate 'hello' to Spanish" → "Hola." (params=["hello"]); request the same intent for
+    "goodbye". Value changed + answer does not echo "hello" → Verifier consulted; low score → refuse
+    → LIVE. Confirms the incoming parameters thread through and the model is actually exercised.
+    """
+    embeddings = FakeEmbeddingProvider()
+    repository = FakeCacheRepository(similarity=0.0)
+    backend = FakeModelBackend()
+
+    candidate = _make_candidate(response="Hola.", parameters=["hello"], similarity=0.98)
+    candidate2 = _make_candidate(similarity=0.80)
+    intent_repo = FakeIntentRepository(candidates=[candidate, candidate2])
+    extractor = FakeIntentExtractor(canonical="translate {str} to spanish", parameters=["goodbye"])
+    verifier = FakeVerifier(score=0.1)  # the model catches the transform mismatch
+    pipeline = _make_pipeline(
+        embeddings,
+        repository,
+        backend,
+        extractor=extractor,
+        intent_repo=intent_repo,
+        verifier=verifier,
+    )
+
+    result = await pipeline.process(CompletionRequest(prompt="Translate 'goodbye' to Spanish."))
+
+    assert result.tier == CacheTier.LIVE
+    assert result.cached is False
+    assert backend.calls == 1
+    assert verifier.calls == 1  # the showpiece model-gate was genuinely consulted
+
+
+async def test_intent_value_mismatch_serves_with_verifier_score() -> None:
+    """The showpiece serve: a value-independent-but-parameterised answer the Verifier rescues.
+
+    Cached "Return policy for order #1111" → "All orders can be returned within 30 days."
+    (params=["1111"]); request order #2222. Value changed + answer does not echo "1111" → Verifier
+    consulted; high score → serve. Proves the score flows Verifier → GateVerdict → ServedCompletion.
+    """
+    embeddings = FakeEmbeddingProvider()
+    repository = FakeCacheRepository(similarity=0.0)
+    backend = FakeModelBackend()
+
+    candidate = _make_candidate(
+        response="All orders can be returned within 30 days.",
+        parameters=["1111"],
+        similarity=0.98,
+    )
+    candidate2 = _make_candidate(similarity=0.80)
+    intent_repo = FakeIntentRepository(candidates=[candidate, candidate2])
+    extractor = FakeIntentExtractor(canonical="return policy for order {id}", parameters=["2222"])
+    verifier = FakeVerifier(score=0.9)
+    pipeline = _make_pipeline(
+        embeddings,
+        repository,
+        backend,
+        extractor=extractor,
+        intent_repo=intent_repo,
+        verifier=verifier,
+    )
+
+    result = await pipeline.process(
+        CompletionRequest(prompt="What is the return policy for order #2222?")
+    )
+
+    assert result.tier == CacheTier.INTENT
+    assert result.confidence == 0.9  # exact: the Verifier's score, untouched (D34)
+    assert backend.calls == 0
+    assert verifier.calls == 1
 
 
 async def test_intent_bound_answer_falls_through_to_live() -> None:

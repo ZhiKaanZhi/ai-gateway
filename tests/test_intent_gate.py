@@ -6,7 +6,7 @@ import pytest
 
 from gateway.domain.models import IntentCandidate
 from gateway.services.intent_extractor import RegexIntentExtractor
-from gateway.services.intent_gate import IntentGate, _answer_is_bound
+from gateway.services.intent_gate import IntentGate, _answer_echoes_param
 from tests.conftest import FakeVerifier
 
 # ---------------------------------------------------------------------------
@@ -14,13 +14,11 @@ from tests.conftest import FakeVerifier
 # ---------------------------------------------------------------------------
 
 
-def _gate(verifier_score: float = 0.0) -> IntentGate:
+def _gate(verifier: FakeVerifier | None = None, *, verifier_score: float = 0.0) -> IntentGate:
     return IntentGate(
-        FakeVerifier(score=verifier_score),
+        verifier or FakeVerifier(score=verifier_score),
         margin_min=0.05,
         staleness_max_seconds=3600.0,
-        verify_band_lo=0.70,
-        verify_band_hi=0.85,
         verify_pass_threshold=0.80,
     )
 
@@ -41,95 +39,134 @@ def _candidate(
 
 
 # ---------------------------------------------------------------------------
-# IntentGate: cheap signals
+# IntentGate: cheap-signal refusals (no model call, confidence None)
 # ---------------------------------------------------------------------------
 
 
 async def test_empty_candidates_refuses() -> None:
-    verdict = await _gate().evaluate("question?", [])
+    verdict = await _gate().evaluate("question?", [], [])
     assert verdict.serve is False
+    assert verdict.confidence is None
 
 
 async def test_stale_entry_refuses() -> None:
     old = _candidate(age_seconds=9999.0)  # well over 3600s staleness_max
-    verdict = await _gate().evaluate("question?", [old])
+    verdict = await _gate().evaluate("question?", [], [old])
     assert verdict.serve is False
+    assert verdict.confidence is None
 
 
 async def test_low_margin_refuses() -> None:
     # top1 = 0.97, top2 = 0.93 → margin = 0.04 < margin_min 0.05
     top1 = _candidate(similarity=0.97)
     top2 = _candidate(similarity=0.93)
-    verdict = await _gate().evaluate("question?", [top1, top2])
+    verdict = await _gate().evaluate("question?", [], [top1, top2])
     assert verdict.serve is False
+    assert verdict.confidence is None
 
 
-async def test_bound_answer_refuses() -> None:
-    # Response contains the stored parameter → bound → refuse
-    candidate = _candidate(
-        response="Order 1111 ships Thursday.",
-        parameters=["1111"],
-        similarity=0.97,
-    )
-    top2 = _candidate(similarity=0.80)
-    verdict = await _gate().evaluate("Where is order 2222?", [candidate, top2])
-    assert verdict.serve is False
+# ---------------------------------------------------------------------------
+# IntentGate: cheap-signal serves (no model call, confidence None)
+# ---------------------------------------------------------------------------
 
 
-async def test_clear_pass_serves_generic_answer() -> None:
-    # Paramless answer, high similarity, fresh, clear margin → confident serve (above band_hi)
+async def test_value_independent_answer_serves_without_verifier() -> None:
+    # Paramless cached answer → reusable across any value; serves on cheap signals alone.
+    v = FakeVerifier(score=0.95)
     top1 = _candidate(response="Return within 30 days.", parameters=[], similarity=0.99)
     top2 = _candidate(similarity=0.80)
-    # base_confidence = 0.5*0.99 + 0.3*staleness_score + 0.2*margin
-    # staleness_score ≈ 1.0 (100s << 3600s), margin = 0.19
-    # ≈ 0.495 + 0.3 + 0.038 ≈ 0.833 — rounds into the verify band, so we need verifier_score
-    gate = _gate(verifier_score=0.95)
-    verdict = await gate.evaluate("How do I return an item?", [top1, top2])
+    verdict = await _gate(v).evaluate("How do I return an item?", ["anything"], [top1, top2])
     assert verdict.serve is True
-    assert verdict.confidence is not None
+    assert verdict.confidence is None
+    assert v.calls == 0  # the model is never consulted for a value-independent answer
+
+
+async def test_same_value_serves_without_verifier() -> None:
+    # Cached parameters == incoming parameters → the answer was generated for this exact input.
+    v = FakeVerifier(score=0.0)
+    top1 = _candidate(response="Order status: shipped.", parameters=["1111"], similarity=0.99)
+    top2 = _candidate(similarity=0.80)
+    verdict = await _gate(v).evaluate("Where is order 1111?", ["1111"], [top1, top2])
+    assert verdict.serve is True
+    assert verdict.confidence is None
+    assert v.calls == 0
+
+
+async def test_same_value_serves_ignoring_case_and_whitespace() -> None:
+    # Parameter comparison is normalised (set, lowercased, stripped) — D32.
+    v = FakeVerifier(score=0.0)
+    top1 = _candidate(response="Delivered.", parameters=["ORD-500"], similarity=0.99)
+    top2 = _candidate(similarity=0.80)
+    verdict = await _gate(v).evaluate("status of ord-500?", [" ord-500 "], [top1, top2])
+    assert verdict.serve is True
+    assert v.calls == 0
 
 
 # ---------------------------------------------------------------------------
-# IntentGate: borderline verify band
+# IntentGate: value changed
 # ---------------------------------------------------------------------------
 
 
-async def test_verify_pass_in_band_serves() -> None:
-    # sim=0.90, age=300s, margin=0.15 → base = 0.5*0.90 + 0.3*(1-300/3600) + 0.2*0.15 ≈ 0.76
-    # → in verify band [0.70, 0.85); verifier_score=0.95 clears verify_pass_threshold=0.80
-    top1 = _candidate(similarity=0.90, age_seconds=300.0)
-    top2 = _candidate(similarity=0.75)
-    gate = _gate(verifier_score=0.95)
-    verdict = await gate.evaluate("question?", [top1, top2])
-    assert verdict.serve is True
-
-
-async def test_verify_fail_in_band_refuses() -> None:
-    top1 = _candidate(similarity=0.75, age_seconds=1800.0)
-    top2 = _candidate(similarity=0.60)
-    gate = _gate(verifier_score=0.30)  # below verify_pass_threshold 0.80
-    verdict = await gate.evaluate("question?", [top1, top2])
+async def test_value_mismatch_echoing_answer_reject_fast() -> None:
+    # Answer echoes the old value → provably bound → reject-fast, model NOT consulted even though
+    # the (irrelevant) verifier would have passed.
+    v = FakeVerifier(score=0.95)
+    candidate = _candidate(
+        response="Order 1111 ships Thursday.", parameters=["1111"], similarity=0.97
+    )
+    top2 = _candidate(similarity=0.80)
+    verdict = await _gate(v).evaluate("Where is order 2222?", ["2222"], [candidate, top2])
     assert verdict.serve is False
+    assert verdict.confidence is None
+    assert v.calls == 0
+
+
+async def test_value_mismatch_nonechoing_answer_serves_on_high_verify() -> None:
+    # Possible transform (answer shares no letters with the value) → Verifier; high → serve.
+    v = FakeVerifier(score=0.95)
+    candidate = _candidate(response="Hola.", parameters=["hello"], similarity=0.97)
+    top2 = _candidate(similarity=0.80)
+    verdict = await _gate(v).evaluate(
+        "Translate 'goodbye' to Spanish.", ["goodbye"], [candidate, top2]
+    )
+    assert verdict.serve is True
+    assert verdict.confidence == 0.95  # the Verifier's score, recorded verbatim (D34)
+    assert verdict.candidate is candidate
+    assert v.calls == 1
+
+
+async def test_value_mismatch_nonechoing_answer_refuses_on_low_verify() -> None:
+    # The F5 hole, now closed: transform answer + changed value → Verifier; low → refuse.
+    v = FakeVerifier(score=0.10)
+    candidate = _candidate(response="Hola.", parameters=["hello"], similarity=0.97)
+    top2 = _candidate(similarity=0.80)
+    verdict = await _gate(v).evaluate(
+        "Translate 'goodbye' to Spanish.", ["goodbye"], [candidate, top2]
+    )
+    assert verdict.serve is False
+    assert verdict.confidence == 0.10  # score recorded even on refuse
+    assert verdict.candidate is None
+    assert v.calls == 1
 
 
 # ---------------------------------------------------------------------------
-# _answer_is_bound helper
+# _answer_echoes_param helper (reject-fast signal only)
 # ---------------------------------------------------------------------------
 
 
-def test_answer_is_bound_true_when_param_in_response() -> None:
+def test_answer_echoes_param_true_when_param_in_response() -> None:
     c = _candidate(response="Order 1111 ships Thursday.", parameters=["1111"])
-    assert _answer_is_bound(c) is True
+    assert _answer_echoes_param(c) is True
 
 
-def test_answer_is_bound_false_when_param_not_in_response() -> None:
+def test_answer_echoes_param_false_when_param_not_in_response() -> None:
     c = _candidate(response="Return within 30 days.", parameters=["1111"])
-    assert _answer_is_bound(c) is False
+    assert _answer_echoes_param(c) is False
 
 
-def test_answer_is_bound_false_with_no_parameters() -> None:
+def test_answer_echoes_param_false_with_no_parameters() -> None:
     c = _candidate(response="Some generic answer.", parameters=[])
-    assert _answer_is_bound(c) is False
+    assert _answer_echoes_param(c) is False
 
 
 # ---------------------------------------------------------------------------

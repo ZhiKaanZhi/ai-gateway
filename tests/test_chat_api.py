@@ -43,8 +43,6 @@ def _real_pipeline(
         FakeVerifier(score=0.0),
         margin_min=0.05,
         staleness_max_seconds=86400.0,
-        verify_band_lo=0.70,
-        verify_band_hi=0.85,
         verify_pass_threshold=0.80,
     )
     return RequestPipeline(

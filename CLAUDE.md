@@ -58,6 +58,8 @@ Scope creep is the known failure mode. The version that gets *finished and defen
 
 Three-tier cache: exact → semantic → intent. Each tier has a confidence gate; the **intent tier needs the strongest gate**, because a false positive triggers a *wrong tool call* (worse than a wrong text answer). The deliberate design of confidence scoring + fallback is the differentiating story. Build it last in CORE and write it up in `DECISIONS.md`.
 
+The intent gate decides reuse by **parameter relationship** (D32, revised post-ship): value-independent or same-value answers serve on cheap signals; on a value mismatch, an echoed old value is a cheap **reject-fast**, and a non-echoing answer (a possible *transform* — `"Translate 'hello'"` → `"Hola."`) is judged by the **Verifier**. The old substring-binding-check is reject-fast only, never a serve signal — see F5 for why a surface test can't detect transform-binding. Action intents (cancel/delete) are a named, unfixed reuse hole (F6).
+
 ## Working discipline
 
 - **`DECISIONS.md`** — append every architectural decision + its rationale. Source of truth, interview-ready.

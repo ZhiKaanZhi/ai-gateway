@@ -9,8 +9,11 @@ Domain vocabulary for the ai-gateway. Definitions are load-bearing: two terms be
 | **Exact hit** | Normalized prompt hash byte-identical to a stored one | exact | Same string only — no meaning involved |
 | **Semantic hit** | Raw-prompt embedding within cosine threshold (≥ 0.95) of a stored prompt | semantic | "Means the same," judged on the *whole* prompt including parameters |
 | **Intent match** | Stripped-prompt embedding finds a candidate — **match only, not yet served** | intent | "Same underlying ask" after parameters removed; the matcher finds, it does not authorize |
-| **Confidence** | The gate's judgment that a cached answer is *correct for this request* (margin + staleness + binding + borderline verify) | intent | A **correctness** decision, not a distance — what an intent match must clear to serve |
+| **Confidence** | The gate's correctness verdict for a cached answer. Cheap signals (staleness, margin, parameter relationship) decide most cases; on a **value mismatch with a non-echoing answer** the Verifier's score *is* the confidence. `None` when no model ran (D34) | intent | A **correctness** decision, not a distance — and `None` ≠ low confidence |
 | **Similarity** | One cosine number between two embeddings | semantic + intent | A **distance**; an *input* to confidence, never confidence itself |
+| **Value-bound / transform-bound** | A cached answer whose correctness depends on the parameter value. A **transform** replaces the value with its result (`"Translate 'hello'"` → `"Hola."`) rather than echoing it — so a substring test cannot detect the binding; only the Verifier can | intent | "The answer *used* the value" — the property similarity and substring both miss |
+| **Reject-fast** | Cheap refuse when the cached answer text echoes a *differing* cached parameter (the old substring check). Sound as a refuse signal; **never** a serve signal — its absence does not imply independence (D32) | intent | An echoed value *is* evidence of binding; a missing echo is *not* evidence of its absence |
+| **Value-independent** | A cached answer that never used a parameter (params empty) — reusable across any value or phrasing (a return-policy answer). Serves on cheap signals, no model call | intent | "The answer ignored the value" — the reuse win the lower tiers can't take |
 
 ---
 

@@ -150,12 +150,15 @@ class FakeIntentRepository:
 
 
 class FakeVerifier:
-    """``Verifier`` that returns a fixed score."""
+    """``Verifier`` that returns a fixed score; counts its calls so tests can assert the gate
+    only consults the model on the value-mismatch path (D32)."""
 
     def __init__(self, score: float = 1.0) -> None:
         self._score = score
+        self.calls = 0
 
     async def verify(self, question: str, candidate_answer: str) -> float:
+        self.calls += 1
         return self._score
 
 

@@ -93,7 +93,9 @@ class RequestPipeline:
             candidates = await self._intent_repo.search(
                 stripped_embedding, self._intent_match_threshold
             )
-            intent_verdict = await self._intent_gate.evaluate(request.prompt, candidates)
+            intent_verdict = await self._intent_gate.evaluate(
+                request.prompt, extracted.parameters, candidates
+            )
             verdict_serve = intent_verdict.serve
         except Exception:  # noqa: BLE001
             _log.warning("intent tier error; falling through to live", exc_info=True)

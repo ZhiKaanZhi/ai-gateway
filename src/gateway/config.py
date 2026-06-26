@@ -55,10 +55,8 @@ class Settings(BaseSettings):
     intent_margin_min: float = Field(default=0.05, ge=0.0, le=1.0)
     # staleness_max_seconds: entries older than this are always refused.
     intent_staleness_max_seconds: float = Field(default=86400.0, gt=0.0)  # 24 h default
-    # verify_band_lo/hi: base-confidence band where the Verifier is called.
-    intent_verify_band_lo: float = Field(default=0.70, ge=0.0, le=1.0)
-    intent_verify_band_hi: float = Field(default=0.85, ge=0.0, le=1.0)
-    # verify_pass_threshold: Verifier score required to serve (precision-biased).
+    # verify_pass_threshold: Verifier score required to serve (precision-biased). The Verifier fires
+    # on a value mismatch (D32), not a confidence band — the retired band lived here (D33).
     intent_verify_pass_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
 
     # --- Model backend (OpenAI-compatible; local Ollama is the free dev default) ---

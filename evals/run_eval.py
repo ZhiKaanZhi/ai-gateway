@@ -7,16 +7,19 @@ Scores the gate against the adversarial labeled set (evals/dataset.py) as two se
 Also runs a cosine-only baseline (serve if similarity >= cosine_baseline_threshold) and reports
 both side by side. The headline: cosine-only → N false serves; gate → 0.
 
+The Verifier is mocked per-case from each case's ``verify_score`` (the score the model would return
+*if* the gate reaches it — the value-changed, non-echoing path, D32). The transform cases script a
+low score so the gate refuses; the value-independent-but-parameterised cases script a high score so
+the gate serves. Cheap-path cases (paramless, same-value, echo reject-fast) never reach the verifier
+and ignore the score. To prove the gate *routes* correctly given a competent verifier — and that the
+real verifier *is* competent — run ``evals/verify_live.py`` against a live model.
+
 Usage (offline — no DB or live model required; thresholds are loaded from config):
     uv run python -m evals.run_eval
-
-The harness calibrates gate thresholds if run with --calibrate (brute-force grid search
-over margin_min and verify_band values against the labeled set).
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import sys
 from dataclasses import dataclass
@@ -27,8 +30,8 @@ from gateway.domain.models import IntentCandidate
 from gateway.services.intent_gate import IntentGate
 
 
-class _FixedVerifier:
-    """Offline ``Verifier`` returning a constant score — keeps the eval free of a live model.
+class _ScriptedVerifier:
+    """Offline ``Verifier`` returning a per-case constant score — no live model needed.
 
     Defined locally (not imported from ``tests``) so ``evals`` never depends on the test package.
     """
@@ -97,22 +100,21 @@ async def _run_gate(case: EvalCase, gate: IntentGate) -> str:
         age_seconds=60.0,  # fresh
         parameters=case.cached_parameters,
     )
-    verdict = await gate.evaluate(case.new_question, [candidate])
+    verdict = await gate.evaluate(case.new_question, case.new_parameters, [candidate])
     return "serve" if verdict.serve else "refuse"
 
 
-async def run_eval(verifier_score: float = 0.0) -> list[EvalResult]:
+async def run_eval() -> list[EvalResult]:
     settings = get_settings()
-    gate = IntentGate(
-        _FixedVerifier(score=verifier_score),
-        margin_min=settings.intent_margin_min,
-        staleness_max_seconds=settings.intent_staleness_max_seconds,
-        verify_band_lo=settings.intent_verify_band_lo,
-        verify_band_hi=settings.intent_verify_band_hi,
-        verify_pass_threshold=settings.intent_verify_pass_threshold,
-    )
     results: list[EvalResult] = []
     for case in EVAL_CASES:
+        # Per-case verifier: the score the model returns on the value-changed, non-echoing path.
+        gate = IntentGate(
+            _ScriptedVerifier(score=case.verify_score if case.verify_score is not None else 0.0),
+            margin_min=settings.intent_margin_min,
+            staleness_max_seconds=settings.intent_staleness_max_seconds,
+            verify_pass_threshold=settings.intent_verify_pass_threshold,
+        )
         gate_verdict = await _run_gate(case, gate)
         baseline_verdict = _cosine_only_verdict(
             case, case.cosine, settings.cosine_baseline_threshold
@@ -164,15 +166,7 @@ def _print_report(results: list[EvalResult]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the intent gate eval (D30).")
-    parser.add_argument(
-        "--verifier-score",
-        type=float,
-        default=0.0,
-        help="Fixed Verifier score for the offline harness (default: 0.0 = always refuse in band).",
-    )
-    args = parser.parse_args()
-    results = asyncio.run(run_eval(verifier_score=args.verifier_score))
+    results = asyncio.run(run_eval())
     _print_report(results)
     gate_false_serves = sum(r.gate_false_serve for r in results)
     sys.exit(0 if gate_false_serves == 0 else 1)

@@ -79,4 +79,5 @@ async def chat(request: ChatRequest, pipeline: PipelineDep) -> ChatResponse:
         tier=served.tier,
         similarity=served.similarity,
         confidence=served.confidence,
+        tool_call=served.tool_call,
     )

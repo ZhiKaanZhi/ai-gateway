@@ -115,6 +115,18 @@ class RequestPipeline:
         backend = self._router.select(complexity)
         completion = await backend.complete(request)
 
+        # --- Action seam (D45): a tool-call reply is an action, not a reusable answer. ---
+        # It reflects live, mutable external state (a write, or a read whose value moves), so
+        # it is never cached — never stored, thus never matched or re-served. Closes F6.
+        if completion.tool_call is not None:
+            return ServedCompletion(
+                text=completion.text,
+                model=completion.model,
+                cached=False,
+                tier=CacheTier.LIVE,
+                tool_call=completion.tool_call,
+            )
+
         # --- Admission routing (D28): paramless → semantic store; parameterized → intent store ---
         try:
             if extracted.parameters:

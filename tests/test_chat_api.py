@@ -15,7 +15,13 @@ from httpx import ASGITransport, AsyncClient
 
 from gateway.api.routes import get_pipeline
 from gateway.domain.errors import BackendError
-from gateway.domain.models import CacheTier, CompletionRequest, Complexity, ServedCompletion
+from gateway.domain.models import (
+    CacheTier,
+    CompletionRequest,
+    Complexity,
+    ServedCompletion,
+    ToolCall,
+)
 from gateway.services.cache_service import CacheService
 from gateway.services.classifier import HeuristicClassifier
 from gateway.services.intent_gate import IntentGate
@@ -89,6 +95,22 @@ async def hit_client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     app.dependency_overrides.clear()
 
 
+@pytest_asyncio.fixture
+async def action_client(app: FastAPI) -> AsyncIterator[AsyncClient]:
+    """Client whose backend emits a tool call — the reply is an action (D45), never cached."""
+    embeddings = FakeEmbeddingProvider()
+    repository = FakeCacheRepository(similarity=0.0)
+    backend = FakeModelBackend(
+        tool_call=ToolCall(name="cancel_order", arguments={"order_id": "1111"})
+    )
+    pipeline = _real_pipeline(embeddings, repository, backend)
+    app.dependency_overrides[get_pipeline] = lambda: pipeline
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        yield http
+    app.dependency_overrides.clear()
+
+
 async def test_miss_returns_200_with_correct_json(miss_client: AsyncClient) -> None:
     response = await miss_client.post("/v1/chat", json={"prompt": "Hello"})
     assert response.status_code == 200
@@ -109,6 +131,16 @@ async def test_hit_returns_200_with_cached_true(hit_client: AsyncClient) -> None
     # Exact hit (same normalized prompt) serves via the exact tier.
     assert data["tier"] in (CacheTier.EXACT, CacheTier.SEMANTIC)
     assert data["response"] == "A programming language."
+
+
+async def test_tool_call_reply_is_returned_live_and_uncached(action_client: AsyncClient) -> None:
+    """A tool-call reply surfaces on the wire as a structured action, served live (D45)."""
+    response = await action_client.post("/v1/chat", json={"prompt": "Cancel order #1111"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["tool_call"] == {"name": "cancel_order", "arguments": {"order_id": "1111"}}
+    assert data["cached"] is False
+    assert data["tier"] == "live"
 
 
 class _ErrorPipeline:

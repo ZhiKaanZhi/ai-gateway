@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from gateway.domain.models import CacheTier
+from gateway.domain.models import CacheTier, ToolCall
 
 
 class HealthResponse(BaseModel):
@@ -40,6 +40,8 @@ class ChatResponse(BaseModel):
     tier: CacheTier
     similarity: float | None = None
     confidence: float | None = None
+    # Present ⇒ the model called a tool (an action); such replies are never cached (D44/D45).
+    tool_call: ToolCall | None = None
 
 
 class CacheLookupRequest(BaseModel):

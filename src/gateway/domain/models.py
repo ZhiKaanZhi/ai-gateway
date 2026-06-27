@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -42,11 +43,24 @@ class CompletionRequest(BaseModel):
     model: str | None = None
 
 
+class ToolCall(BaseModel):
+    """A structured tool call emitted by the model — an *action*, not a question.
+
+    Present on a reply ⇒ the model acted; such replies are never cached (D44/D45).
+    Mirrors the OpenAI tool-call contract the openai_compat backend already speaks.
+    """
+
+    name: str
+    arguments: dict[str, Any]
+
+
 class CompletionResult(BaseModel):
     """What a model backend returns for a :class:`CompletionRequest`."""
 
     text: str
     model: str
+    # Present ⇒ the model called a tool (an action); such replies are never cached (D44/D45).
+    tool_call: ToolCall | None = None
 
 
 class CacheEntry(BaseModel):
@@ -142,3 +156,5 @@ class ServedCompletion(BaseModel):
     tier: CacheTier
     similarity: float | None = None
     confidence: float | None = None
+    # Present ⇒ the model called a tool (an action); such replies are never cached (D44/D45).
+    tool_call: ToolCall | None = None

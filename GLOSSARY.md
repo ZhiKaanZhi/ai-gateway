@@ -14,6 +14,8 @@ Domain vocabulary for the ai-gateway. Definitions are load-bearing: two terms be
 | **Value-bound / transform-bound** | A cached answer whose correctness depends on the parameter value. A **transform** replaces the value with its result (`"Translate 'hello'"` → `"Hola."`) rather than echoing it — so a substring test cannot detect the binding; only the Verifier can | intent | "The answer *used* the value" — the property similarity and substring both miss |
 | **Reject-fast** | Cheap refuse when the cached answer text echoes a *differing* cached parameter (the old substring check). Sound as a refuse signal; **never** a serve signal — its absence does not imply independence (D32) | intent | An echoed value *is* evidence of binding; a missing echo is *not* evidence of its absence |
 | **Value-independent** | A cached answer that never used a parameter (params empty) — reusable across any value or phrasing (a return-policy answer). Serves on cheap signals, no model call | intent | "The answer ignored the value" — the reuse win the lower tiers can't take |
+| **Action (tool-call reply)** | A reply where the model **called a tool** rather than answering in text — it reflects live, mutable external state (an order DB), so it is **never cached** (D43–D45) | live | Tool output is a one-time live event, not reusable static knowledge — detected from the reply, never a request flag or verb |
+| **Question (text reply)** | A reply that is **plain text** — reusable static knowledge, so it is **cacheable** through the three tiers | exact/semantic/intent | The complement of an action: text answers reuse, tool calls do not |
 
 ---
 

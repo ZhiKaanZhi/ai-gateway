@@ -11,6 +11,7 @@ from gateway.domain.models import (
     Complexity,
     IntentCandidate,
     ServedCompletion,
+    ToolCall,
 )
 from gateway.services.cache_service import CacheService
 from gateway.services.classifier import HeuristicClassifier
@@ -341,3 +342,37 @@ async def test_paramless_prompt_goes_to_semantic_store() -> None:
 
     assert len(repository.entries) == 1
     assert len(intent_repo.entries) == 0
+
+
+# ---------------------------------------------------------------------------
+# Action seam (F6 / D45): a tool-call reply is never cached, so never re-served
+# ---------------------------------------------------------------------------
+
+
+async def test_tool_call_reply_is_never_cached_and_always_reruns() -> None:
+    """A tool-call reply is an action: stored in neither tier, so it can never be re-served.
+
+    The F6 proof — a cached value-free confirmation must never stand in for a live action.
+    """
+    embeddings = FakeEmbeddingProvider()
+    repository = FakeCacheRepository(similarity=0.0)  # semantic miss → reach the live path
+    intent_repo = FakeIntentRepository()  # intent miss too
+    tool_call = ToolCall(name="cancel_order", arguments={"order_id": "1111"})
+    backend = FakeModelBackend(tool_call=tool_call)
+    pipeline = _make_pipeline(embeddings, repository, backend, intent_repo=intent_repo)
+
+    result = await pipeline.process(CompletionRequest(prompt="Cancel order #1111"))
+
+    # Cached in neither tier.
+    assert len(repository.entries) == 0
+    assert len(intent_repo.entries) == 0
+    # Served live, carrying the structured action for the app to execute.
+    assert isinstance(result, ServedCompletion)
+    assert result.tool_call == tool_call
+    assert result.cached is False
+    assert result.tier == CacheTier.LIVE
+    assert backend.calls == 1
+
+    # A second identical action hits the backend again — never served from cache.
+    await pipeline.process(CompletionRequest(prompt="Cancel order #1111"))
+    assert backend.calls == 2

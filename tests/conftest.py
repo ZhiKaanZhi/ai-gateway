@@ -28,6 +28,7 @@ from gateway.domain.models import (
     ExtractedIntent,
     IntentCandidate,
     IntentEntry,
+    ToolCall,
 )
 from gateway.main import create_app
 
@@ -88,10 +89,15 @@ class FakeCacheRepository:
 
 
 class FakeModelBackend:
-    """Echoing ``ModelBackend`` for tests; counts its calls."""
+    """Echoing ``ModelBackend`` for tests; counts its calls.
 
-    def __init__(self) -> None:
+    Pass ``tool_call`` to make the backend emit an *action* reply (every ``complete`` returns it),
+    so action-seam tests can drive the never-cache path (D45).
+    """
+
+    def __init__(self, tool_call: ToolCall | None = None) -> None:
         self.calls = 0
+        self._tool_call = tool_call
 
     @property
     def name(self) -> str:
@@ -99,7 +105,7 @@ class FakeModelBackend:
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
         self.calls += 1
-        return CompletionResult(text=request.prompt, model=self.name)
+        return CompletionResult(text=request.prompt, model=self.name, tool_call=self._tool_call)
 
 
 class FakeModelRouter:

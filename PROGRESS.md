@@ -19,6 +19,6 @@ Slice 3 done and green: three-tier cache (exact → semantic → intent) with a 
 
 ## Next step
 
-**Open evaluation item (carry into next session):** the live-model run of `evals/verify_live.py` against `gemma3:1b` (recorded in `FAILURES.md` F5, 2026-06-26) shows the real verifier refuses transforms correctly (0.20–0.40, safe) but **under-scores the value-independent serve-wins** (0.50 / 0.30, below the 0.80 pass) — so the 1B model captures precision but not the recall win. To evaluate: re-run `uv run python evals/verify_live.py` (needs Ollama up) and decide whether to (a) use a stronger verifier model via `GATEWAY_VERIFIER_MODEL`, (b) tune the verify prompt in `src/gateway/adapters/verifier.py`, or (c) lower `intent_verify_pass_threshold` (trades recall for precision risk). The gate *logic* is settled (D32–D34); this is a model/prompt calibration question. Offline contrast still holds: `uv run python -m evals.run_eval` → gate 0 / baseline 8.
+**Slice 4 — Multi-customer data hygiene** (D31): delete-old-entries behind `IntentRepository`, a background timer, a TTL setting; then the action-intent execution seam (F6). The gate *logic* is settled (D32–D34); offline contrast holds (`uv run python -m evals.run_eval` → gate 0 / baseline 8).
 
-Then: Slice 4 (multi-customer data hygiene, D31) and the action-intent execution seam (F6).
+Parked: intent verifier value-independent recall — fails safe, see D35; revisit when a real workload justifies a stronger `GATEWAY_VERIFIER_MODEL`.

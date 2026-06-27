@@ -162,3 +162,17 @@ The gate now receives the incoming request's parameters and compares them (norma
 ### D34 — `confidence` is the Verifier's score when the model ran, else `None`
 `GateVerdict.confidence` and `ServedCompletion.confidence` are `float | None`. The model's verify score is recorded only when the Verifier actually ran (the value-changed, non-echoing path); every cheap-signal verdict (paramless serve, same-value serve, stale/margin/reject-fast refuse) carries `None`. **`None` means "served on cheap signals, not model-scored" — not low confidence.** Similarity keeps its own separate field; folding it into `confidence` would re-merge the two axes the whole slice exists to separate (similarity ≠ confidence; GLOSSARY.md). Docstrings on both fields pin this so a future reader cannot misread `None` as `0.0`.
 **Cost to reverse:** low — a field type and its bookkeeping; no schema or port change.
+
+### D35 (DEFER) — Intent verifier stays on the cheap local model; value-independent recall is a known, fail-safe limitation
+gemma3:1b captures precision (transforms 0.20-0.40, refused) but under-scores value-independent reuse
+(serve-wins 0.50 / 0.30, below the 0.80 pass). One verify-prompt reframe (relevance ->
+answer-correctness) was attempted and did not cleanly separate the classes on the 1B model, so the
+original prompt stands. The scores are not threshold-separable - a serve-win at 0.30 sits below a
+transform at 0.40 - so lowering intent_verify_pass_threshold is ruled out; it would reintroduce a
+false serve. (The reframe attempt made this worse, not better: it pushed two transforms across the
+0.80 pass to 0.80 / 0.87 while a serve-win still scored 0.75 - a precision regression, reverted; the
+six scores are in FAILURES.md F5.) The gap fails safe (a wasted live call, never a wrong answer);
+gate logic (D32-D34) is unaffected. Revisit only when a real workload justifies a stronger verifier
+model (GATEWAY_VERIFIER_MODEL) or a prompt tuned to the model actually shipped - not the disposable
+1B.
+**Cost to reverse:** trivial - a config/model swap; the port and eval already support it.

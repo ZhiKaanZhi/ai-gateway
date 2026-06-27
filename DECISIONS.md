@@ -175,4 +175,18 @@ six scores are in FAILURES.md F5.) The gap fails safe (a wasted live call, never
 gate logic (D32-D34) is unaffected. Revisit only when a real workload justifies a stronger verifier
 model (GATEWAY_VERIFIER_MODEL) or a prompt tuned to the model actually shipped - not the disposable
 1B.
+**Update (2026-06-27) — `gemma3:4b` tried, does not help.** The "stronger model" lever above was
+tested directly (env override, both prompt variants; six scores per variant in FAILURES.md F5). 4b
+did not separate the classes on either prompt and was *worse* than 1b: it confidently false-serves the
+currency-conversion transform (€9.20 → 0.95 / 1.00) and false-refuses the universal return-policy
+serve-win (→ 0.00). Conclusion: capacity alone is not the fix — a bigger general model is not
+automatically a better answer-correctness verifier here. Revisit now means a verifier *trained or
+tuned for this judgement*, not merely a larger one; the disposable local models (1b, 4b) both fail.
+The deferral and its fail-safe rationale are unchanged. `phi4-mini` was also tried and is *not
+evaluable* — it ignores the bare-float output contract and emits prose, so every case falls to the
+0.0 fallback (F5). **Verdict across the tested set: `gemma3:1b` on the shipped relevance prompt is the
+best available** — the only configuration that refused all four transforms with zero false-serves
+while honoring the contract (4b confidently false-serves the convert transform at 0.95/1.00; phi4-mini
+breaks the contract). The model already shipped is the safest choice; this validates the deferral
+rather than reopening it.
 **Cost to reverse:** trivial - a config/model swap; the port and eval already support it.

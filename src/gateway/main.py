@@ -8,8 +8,9 @@ construction here is the whole mechanism.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import httpx
 from fastapi import FastAPI, Request
@@ -29,6 +30,7 @@ from gateway.services.classifier import HeuristicClassifier
 from gateway.services.intent_extractor import RegexIntentExtractor
 from gateway.services.intent_gate import IntentGate
 from gateway.services.pipeline import RequestPipeline
+from gateway.services.prune_timer import run_prune_loop
 from gateway.services.router import CostAwareRouter
 
 # Note (Windows): psycopg async can't run on the default ProactorEventLoop. The event-loop policy
@@ -101,9 +103,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.intent_match_threshold,
     )
 
+    # --- Background prune timer: age-only TTL cleanup of intent_entries (D37, D40) ---
+    # Started last, immediately before the guarded block, so the finally below always tears it down.
+    # The age reuses the gate's staleness setting (D39); the cadence is its own config field (D40).
+    prune_task = asyncio.create_task(
+        run_prune_loop(
+            intent_repository,
+            interval_seconds=settings.intent_prune_interval_seconds,
+            max_age_seconds=settings.intent_staleness_max_seconds,
+        )
+    )
+
     try:
         yield
     finally:
+        # Stop the prune timer before closing the pool it borrows connections from. cancel() only
+        # requests; awaiting it lets an in-flight sweep unwind cleanly (D40).
+        prune_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await prune_task
         await client.aclose()
         await verifier_client.aclose()
         await pool.close()

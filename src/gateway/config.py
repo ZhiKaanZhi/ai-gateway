@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # on a value mismatch (D32), not a confidence band — the retired band lived here (D33).
     intent_verify_pass_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
 
+    # --- Intent prune sweep cadence (D40). The prune *age* reuses intent_staleness_max_seconds ---
+    # (D39) — no separate TTL field, so a second age constant can never drift from the gate's.
+    intent_prune_interval_seconds: float = Field(default=3600.0, gt=0.0)  # hourly default
+
     # --- Model backend (OpenAI-compatible; local Ollama is the free dev default) ---
     backend_base_url: str = "http://localhost:11434/v1"
     backend_model: str = "gemma3:1b"  # run `ollama pull gemma3:1b`

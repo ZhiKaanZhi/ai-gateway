@@ -35,6 +35,10 @@ _STORE_SQL = """
     VALUES (%s, %s, %s, %s, %s, %s, %s)
 """
 
+# Age-only TTL cleanup (D38): delete rows past max_age_seconds. now() and created_at compare
+# directly; make_interval(secs => …) turns the float age into the interval to subtract.
+_PRUNE_SQL = "DELETE FROM intent_entries WHERE created_at < now() - make_interval(secs => %s)"
+
 
 class PgVectorIntentRepository:
     """Intent cache over Postgres + pgvector. Implements ``IntentRepository``."""
@@ -76,3 +80,16 @@ class PgVectorIntentRepository:
                     entry.created_at,
                 ),
             )
+
+    async def prune_older_than(self, max_age_seconds: float) -> int:
+        """Delete intent rows older than ``max_age_seconds``; return how many were removed.
+
+        Dead tuples and dead HNSW index nodes left by the DELETE are reclaimed by autovacuum (D41);
+        if this ever runs hot, escalate via per-table autovacuum tuning, then a manual VACUUM on an
+        autocommit connection — never a scheduled VACUUM FULL (it rewrites the table under a lock).
+        """
+        # The pool's connection context manager commits on clean exit (same as store()), so the
+        # DELETE needs no explicit commit. rowcount is the int count of deleted rows on psycopg 3.
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(_PRUNE_SQL, (max_age_seconds,))
+            return cur.rowcount

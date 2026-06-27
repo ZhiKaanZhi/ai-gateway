@@ -104,6 +104,15 @@ class IntentRepository(Protocol):
 
     async def store(self, entry: IntentEntry) -> None: ...
 
+    async def prune_older_than(self, max_age_seconds: float) -> int:
+        """Delete intent rows older than ``max_age_seconds``; return the number deleted.
+
+        Age-only TTL cleanup (D38): the background prune timer calls this on a fixed interval and
+        logs the returned count as proof it ran. ``max_age_seconds`` matches the gate's staleness
+        vocabulary — the same age the gate refuses to serve past (D39).
+        """
+        ...
+
 
 @runtime_checkable
 class Verifier(Protocol):

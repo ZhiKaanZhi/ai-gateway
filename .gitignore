@@ -22,5 +22,8 @@ local_cache/
 .DS_Store
 .idea/
 
+# Serena language-server tooling (local, machine-specific)
+.serena/
+
 # NOTE: uv.lock, .python-version, and .env.example are intentionally committed
 # (reproducibility) — do not add them here.

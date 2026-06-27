@@ -148,6 +148,14 @@ class FakeIntentRepository:
     async def store(self, entry: IntentEntry) -> None:
         self.entries.append(entry)
 
+    async def prune_older_than(self, max_age_seconds: float) -> int:
+        now = datetime.now(UTC)
+        before = len(self.entries)
+        self.entries = [
+            e for e in self.entries if (now - e.created_at).total_seconds() <= max_age_seconds
+        ]
+        return before - len(self.entries)
+
 
 class FakeVerifier:
     """``Verifier`` that returns a fixed score; counts its calls so tests can assert the gate

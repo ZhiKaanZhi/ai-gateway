@@ -51,6 +51,7 @@ tests/           # conftest.py provides fakes implementing the Protocols
 - **Second layer (only if time):** complexity classifier + cost-aware router + multi-provider backends.
 - **Stubs (NoOp default):** billing, quality checker, escalation.
 - **Explicitly OUT:** Kafka / real-time feature pipeline, A/B testing, multi-tenancy, tool registry, the "become an AI provider" billing/business layer. (These are in the old .NET roadmap — that strategy is superseded. Do not re-introduce them.)
+- **`src/eshop/` is a demo app, not part of the gateway:** it may hold business logic and its own loose-dict tool menu. The gateway's rules (no business logic, no loose dicts crossing seams except the named exceptions) bind `src/gateway/` only.
 
 Scope creep is the known failure mode. The version that gets *finished and defended* beats the sprawling one.
 

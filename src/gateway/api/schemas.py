@@ -6,7 +6,7 @@ domain vocabulary are allowed to evolve independently.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -24,6 +24,10 @@ class ChatRequest(BaseModel):
 
     prompt: str
     model: str | None = None
+    # The tool menu, relayed verbatim to the model and never inspected here (D47).
+    tools: list[dict[str, Any]] | None = None
+    # Injected background text (e.g. an FAQ), sent as a system message; never a cache key (D51).
+    context: str | None = None
 
 
 class ChatResponse(BaseModel):

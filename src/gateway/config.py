@@ -65,7 +65,7 @@ class Settings(BaseSettings):
 
     # --- Model backend (OpenAI-compatible; local Ollama is the free dev default) ---
     backend_base_url: str = "http://localhost:11434/v1"
-    backend_model: str = "gemma3:1b"  # run `ollama pull gemma3:1b`
+    backend_model: str = "llama3.2:3b"  # tool-capable; run `ollama pull llama3.2:3b` (D53)
     # Masked so a stray log or settings dump never leaks a live key once the URL points at a paid
     # provider. Blank default → the adapter omits the auth header entirely.
     backend_api_key: SecretStr = SecretStr("")

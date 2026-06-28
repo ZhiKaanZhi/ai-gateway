@@ -143,6 +143,60 @@ async def test_tool_call_reply_is_returned_live_and_uncached(action_client: Asyn
     assert data["tier"] == "live"
 
 
+async def test_tools_and_context_are_forwarded_to_the_backend(app: FastAPI) -> None:
+    """The gateway relays the tool menu + context verbatim to the backend (D47/D51) and parses
+    the resulting tool call back onto the wire, served live and uncached."""
+    embeddings = FakeEmbeddingProvider()
+    repository = FakeCacheRepository(similarity=0.0)
+    backend = FakeModelBackend(
+        tool_call=ToolCall(name="cancel_order", arguments={"order_id": "1111"})
+    )
+    pipeline = _real_pipeline(embeddings, repository, backend)
+    app.dependency_overrides[get_pipeline] = lambda: pipeline
+    transport = ASGITransport(app=app)
+    menu = [{"type": "function", "function": {"name": "cancel_order"}}]
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        response = await http.post(
+            "/v1/chat",
+            json={"prompt": "Cancel order #1111", "tools": menu, "context": "FAQ text"},
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    # The menu + context reached the backend untouched.
+    assert backend.last_request is not None
+    assert backend.last_request.tools == menu
+    assert backend.last_request.context == "FAQ text"
+    # And the parsed tool call surfaces, live + uncached.
+    data = response.json()
+    assert data["tool_call"] == {"name": "cancel_order", "arguments": {"order_id": "1111"}}
+    assert data["cached"] is False
+    assert data["tier"] == "live"
+    # Nothing was admitted to either tier (a tool-call reply is never cached, D45).
+    assert repository.entries == []
+
+
+async def test_question_self_populates_the_cache(app: FastAPI) -> None:
+    """A question misses then is stored; the identical re-ask is served from cache (FAQ self-fill).
+
+    The deterministic version of the live FAQ story: first ask = miss/stored, repeat = served.
+    """
+    embeddings = FakeEmbeddingProvider()
+    repository = FakeCacheRepository(similarity=0.99)  # a stored entry clears the 0.95 gate
+    backend = FakeModelBackend()
+    pipeline = _real_pipeline(embeddings, repository, backend)
+    app.dependency_overrides[get_pipeline] = lambda: pipeline
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        first = await http.post("/v1/chat", json={"prompt": "return policy?"})
+        second = await http.post("/v1/chat", json={"prompt": "return policy?"})
+    app.dependency_overrides.clear()
+
+    assert first.json()["cached"] is False  # miss → live → stored
+    assert second.json()["cached"] is True  # served from cache, no second backend call
+    assert backend.calls == 1
+
+
 class _ErrorPipeline:
     """Fake pipeline that always raises BackendError with the given is_timeout."""
 

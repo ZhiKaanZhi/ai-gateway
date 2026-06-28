@@ -98,6 +98,7 @@ class FakeModelBackend:
     def __init__(self, tool_call: ToolCall | None = None) -> None:
         self.calls = 0
         self._tool_call = tool_call
+        self.last_request: CompletionRequest | None = None
 
     @property
     def name(self) -> str:
@@ -105,6 +106,7 @@ class FakeModelBackend:
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
         self.calls += 1
+        self.last_request = request  # lets tests assert what the gateway forwarded (tools/context)
         return CompletionResult(text=request.prompt, model=self.name, tool_call=self._tool_call)
 
 

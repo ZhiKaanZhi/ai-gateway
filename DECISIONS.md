@@ -230,3 +230,39 @@ A request is an *action* (must run, never reuse) iff the model's reply is a **to
 ### D45 — A tool-call reply is never cached; the rule closes F6
 In `RequestPipeline.process`, immediately after `backend.complete` and **before** the admission-store block, a guard returns early when `completion.tool_call is not None`, skipping the store entirely (the reply is written to neither `cache_entries` nor `intent_entries`). Because such a reply is never stored, it can never be matched and re-served, so the F6 hole (a cached value-free "Done." re-served for a different order that never ran) is structurally impossible. The deeper rationale generalises beyond writes: a tool-call reply reflects **live, mutable external state** (the orders DB), so it is not reusable static knowledge — this covers reads (`get_order_status`, whose answer changes as the order progresses) as well as writes (`cancel_order`). **Accepted cost:** a tool that happens to read genuinely static data is also never cached; we deliberately do *not* classify "is this tool's output stable?", because that is the same can't-tell-from-the-surface trap as D43. Static, cacheable content must therefore be produced as **text** by the model (optionally from app-injected context), never via a tool.
 **Cost to reverse:** low — remove the guard; the store block runs for every reply again.
+
+### D46 — The eshop is a minimal runnable app, not a test-only harness
+Slice 6 needs a real model to actually call a tool against real (if in-memory) state. The eshop is built as a **runnable FastAPI app** — `POST /chat` plus a few order endpoints (`cancel_order` / `refund_order` / `get_order_status`) over an in-memory dict, no DB, no UI, no auth — so it is curl-able and demoable, not just green tests. Chosen over a test-only harness (the cheaper option) because the value of this slice includes a thing you can poke by hand. The eshop is a **separate service** that calls the gateway over HTTP: the app owns the business (orders, tool menu, FAQ) and executes tools; the gateway stays generic and never performs a side effect (D43). A thin console chat client drives the app's `/chat` for demos.
+**Cost to reverse:** low — the store + tool menu + execute loop are the substance; swapping the HTTP shell for a harness (or back) leaves them intact.
+
+### D47 — The tools menu crosses as an opaque passthrough, not a typed model
+`ChatRequest` and `CompletionRequest` gain `tools: list[dict[str, Any]] | None` (and `context: str | None`, see D51). The app builds the menu in the exact OpenAI tool shape; the gateway forwards it verbatim into the model payload and **never inspects it**. A typed `ToolSpec` model was rejected: the gateway only types what it *inspects*, and it inspects the model's *reply* (the typed `ToolCall`, D44), not the menu it merely relays. This is consistent with the one loose-dict exception already shipped — `ToolCall.arguments: dict[str, Any]` — for the same reason (per-tool shapes can't be statically typed). Trade-off named: it widens the loose-dict surface CLAUDE.md warns against, and a malformed menu fails at the model rather than at the gateway boundary — acceptable for an app you control.
+**Cost to reverse:** low — wrap the menu in a typed `ToolSpec` later behind the same seam; nothing else moves.
+
+### D48 — Parse only the first tool call; multi-tool is a future feature
+`openai_compat` reads `choices[0].message.tool_calls[0]`, `json.loads` its `function.arguments` (Ollama returns it as a JSON **string**, confirmed live) into the typed `ToolCall(name, arguments: dict)`. Additional tool calls in the same reply are **ignored**; malformed argument JSON raises `BackendError` (the existing bad-response path). A real parallel-action request ("cancel 1111 and refund 2222") therefore silently drops the second action — an accepted limitation for a thin cancel/refund/status shop, not an oversight.
+**Future:** widen the `tool_call` field to a list and execute several actions per turn.
+**Cost to reverse:** low — widen the field; the parse already sees the full list.
+
+### D49 — Templated confirmation reply; no second model call
+After the app executes the tool, it returns a **fixed confirmation string** itself (e.g. `f"Done — order {order_id} cancelled."`) — no second round-trip to the model. Plain text, deliberately **without** an "Anything else?" tail: with no conversation memory yet (D50), inviting a follow-up would be a promise the system can't keep. A model-written reply (sending the tool result back for the model to phrase) is nicer for a real product but must *also* bypass the cache, because it describes live mutable state — the same reason actions aren't cached (D45).
+**Future:** model-written confirmation via a second, explicitly uncached, model call.
+**Cost to reverse:** low — add the second call behind the execute step.
+
+### D50 — Single-message only; conversation memory is the next slice
+The request carries one user message; the gateway does not assemble prior turns. None of Slice 6's scenarios need history, and adding it pulls in the cache-key problem (what do you hash/embed when there are several messages — the last? the transcript?), which is a slice of its own.
+**Future:** conversation/messages support + a cache-key policy for multi-turn.
+**Cost to reverse:** low — purely additive; nothing here blocks it.
+
+### D51 — Question and injected context are separate fields; the cache keys only on the question
+The FAQ/policy text the model needs is sent as a distinct `context` field, **not** glued onto the prompt. The gateway injects it as a system message for the model, but every cache key (exact hash + semantic/intent embedding) is computed on `prompt` alone — which the pipeline already does, so the split is what keeps it correct. Folding context into the prompt would let two different questions sharing the same large FAQ look near-identical to the matcher and false-serve each other. For Slice 6 the app supplies `context` from a **hardcoded FAQ**; where that text comes from is the app's business.
+**Future:** real RAG — the app retrieves relevant context from its own DB/file/vector store and fills `context`. App-side; the gateway's `context` seam is unchanged.
+**Cost to reverse:** low — additive field; remove it to revert to prompt-only.
+
+### D52 — Two-track e2e tests: deterministic fakes in CI, a self-skipping live run by hand
+Every scenario (exact / semantic / intent reuse-vs-refuse / action-never-cached / FAQ self-populate) runs in CI against a **fake backend** returning canned replies — fast and deterministic, proving the gateway's *logic* and the app's execute loop. A separate `-m live` run uses the real `llama3.2:3b` to prove the *model* actually emits the tool call; it self-skips when the servers aren't up and never runs in CI (per F3). The two answer different questions — verification (the wiring) vs validation (the model isn't lying), the F4/F5 lesson. The live action assertion checks that a tool *named* `cancel_order` was called, not the exact wording, so model nondeterminism doesn't flag false failures.
+**Cost to reverse:** low — it's test code.
+
+### D53 — Backend model swapped to llama3.2:3b for tool support
+The live probe showed Ollama rejects tools on the old default: `gemma3:1b does not support tools`. `GATEWAY_BACKEND_MODEL` default changes to `llama3.2:3b`, which emits proper OpenAI `tool_calls` (verified live, `finish_reason: "tool_calls"`, `arguments` returned as a JSON string). This is the config-only swap the backend was designed for (D16). The **verifier** stays `gemma3:1b` (F5/D35: measured best-of-set; tool-incapability is irrelevant to its bare-float scoring job, and stronger general models false-served the dangerous direction).
+**Cost to reverse:** trivial — one env/default value.

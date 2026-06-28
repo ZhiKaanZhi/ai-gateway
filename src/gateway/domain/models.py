@@ -41,6 +41,10 @@ class CompletionRequest(BaseModel):
 
     prompt: str
     model: str | None = None
+    # The tool menu, forwarded verbatim into the model payload, never inspected (D47).
+    tools: list[dict[str, Any]] | None = None
+    # Injected background text (e.g. an FAQ), sent as a system message; never a cache key (D51).
+    context: str | None = None
 
 
 class ToolCall(BaseModel):
